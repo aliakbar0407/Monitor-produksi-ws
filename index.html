@@ -917,20 +917,32 @@ async function changePin(oldPin, newPin, confirmPin) {
   return { ok: true };
 }
 
+// Normalizes a customer name for matching purposes only (trim + collapse
+// whitespace + lowercase). Used so that "PT. ABC", " PT. ABC", and "PT.  ABC"
+// (typo variants of the same customer) are always grouped together when
+// computing OS/stok, even for rows saved before the input was normalized.
+function normKey(s) { return (s || '').toString().trim().replace(/\s+/g, ' ').toLowerCase(); }
+
 function computeAggregates() {
   const map = {};
   const touch = (nama, ukuran) => {
-    if (!map[nama]) map[nama] = { nama, ukuran: ukuran || CUSTOMER_MAP[nama] || '', po: 0, produksi: 0, keluar: 0 };
-    if (ukuran && !map[nama].ukuran) map[nama].ukuran = ukuran;
+    const key = normKey(nama);
+    if (!key) return null;
+    if (!map[key]) map[key] = { nama, ukuran: ukuran || CUSTOMER_MAP[nama] || '', po: 0, produksi: 0, keluar: 0 };
+    else if (ukuran && !map[key].ukuran) map[key].ukuran = ukuran;
+    return key;
   };
   Object.keys(OS_AWAL).forEach((nama) => touch(nama, ''));
   Object.keys(STOK_AWAL).forEach((nama) => touch(nama, ''));
-  state.poIn.forEach((r) => { touch(r.nama, r.ukuran); map[r.nama].po += Number(r.qty) || 0; });
-  state.produksi.forEach((r) => { touch(r.nama, r.ukuran); map[r.nama].produksi += Number(r.qty) || 0; });
-  state.keluar.forEach((r) => { touch(r.nama, r.ukuran); map[r.nama].keluar += Number(r.qty) || 0; });
+  state.poIn.forEach((r) => { const k = touch(r.nama, r.ukuran); if (k) map[k].po += Number(r.qty) || 0; });
+  state.produksi.forEach((r) => { const k = touch(r.nama, r.ukuran); if (k) map[k].produksi += Number(r.qty) || 0; });
+  state.keluar.forEach((r) => { const k = touch(r.nama, r.ukuran); if (k) map[k].keluar += Number(r.qty) || 0; });
   return Object.values(map).map((it) => {
-    const osAwal = OS_AWAL[it.nama] || 0;
-    const stokAwal = STOK_AWAL[it.nama] || 0;
+    const key = normKey(it.nama);
+    const osAwalKey = Object.keys(OS_AWAL).find((k) => normKey(k) === key);
+    const stokAwalKey = Object.keys(STOK_AWAL).find((k) => normKey(k) === key);
+    const osAwal = osAwalKey ? OS_AWAL[osAwalKey] : 0;
+    const stokAwal = stokAwalKey ? STOK_AWAL[stokAwalKey] : 0;
     const stok = stokAwal + it.produksi - it.keluar;
     const siapWH = Math.max(0, Math.min(state.readyWH[it.nama] || 0, Math.max(stok, 0)));
     return Object.assign({}, it, {
@@ -978,14 +990,19 @@ function computeProduksiReport(from, to) {
 function computeOsReport(to) {
   const map = {};
   const touch = (nama, ukuran) => {
-    if (!map[nama]) map[nama] = { nama, ukuran: ukuran || CUSTOMER_MAP[nama] || '', po: 0, produksi: 0 };
-    if (ukuran && !map[nama].ukuran) map[nama].ukuran = ukuran;
+    const key = normKey(nama);
+    if (!key) return null;
+    if (!map[key]) map[key] = { nama, ukuran: ukuran || CUSTOMER_MAP[nama] || '', po: 0, produksi: 0 };
+    else if (ukuran && !map[key].ukuran) map[key].ukuran = ukuran;
+    return key;
   };
   Object.keys(OS_AWAL).forEach((nama) => touch(nama, ''));
-  state.poIn.filter((r) => r.tanggal <= to).forEach((r) => { touch(r.nama, r.ukuran); map[r.nama].po += Number(r.qty) || 0; });
-  state.produksi.filter((r) => r.tanggal <= to).forEach((r) => { touch(r.nama, r.ukuran); map[r.nama].produksi += Number(r.qty) || 0; });
+  state.poIn.filter((r) => r.tanggal <= to).forEach((r) => { const k = touch(r.nama, r.ukuran); if (k) map[k].po += Number(r.qty) || 0; });
+  state.produksi.filter((r) => r.tanggal <= to).forEach((r) => { const k = touch(r.nama, r.ukuran); if (k) map[k].produksi += Number(r.qty) || 0; });
   const rows = Object.values(map).map((it) => {
-    const osAwal = OS_AWAL[it.nama] || 0;
+    const key = normKey(it.nama);
+    const osAwalKey = Object.keys(OS_AWAL).find((k) => normKey(k) === key);
+    const osAwal = osAwalKey ? OS_AWAL[osAwalKey] : 0;
     return Object.assign({}, it, { osAwal, os: osAwal + it.po - it.produksi });
   }).filter((r) => r.os !== 0).sort((a, b) => b.os - a.os);
   const totalKurang = rows.filter((r) => r.os > 0).reduce((s, r) => s + r.os, 0);
@@ -1329,7 +1346,13 @@ function bindCombobox(idPrefix) {
   });
 }
 
-function comboNama(idPrefix) { return (document.getElementById(idPrefix + '-input') || {}).value || ''; }
+function comboNama(idPrefix) {
+  const raw = (document.getElementById(idPrefix + '-input') || {}).value || '';
+  // Trim leading/trailing spaces and collapse repeated internal spaces so that
+  // the same customer typed slightly differently (extra spaces) in PO Masuk,
+  // Produksi, Keluar, or Saldo Awal always lands on the same OS row.
+  return raw.trim().replace(/\s+/g, ' ');
+}
 function comboUkuran(idPrefix) { return (document.getElementById(idPrefix + '-ukuran-value') || {}).value || ''; }
 
 // ---------------- Lightweight combobox for saved truck plates ----------------
