@@ -1239,8 +1239,8 @@ function comboMarkup(idPrefix, initialNama, initialUkuran) {
         '<button type="button" id="' + idPrefix + '-clear" class="combo-clear" style="display:' + (nama ? 'block' : 'none') + ';">&times;</button>' +
       '</div>' +
       '<div id="' + idPrefix + '-panel" class="combo-panel"></div>' +
-      '<div class="field-sub">Ukuran: <strong id="' + idPrefix + '-ukuran">' + esc(ukuran || '-') + '</strong></div>' +
-      '<input type="hidden" id="' + idPrefix + '-ukuran-value" value="' + esc(ukuran) + '">' +
+      '<label class="field-label" style="margin-top:8px;">Ukuran Palet</label>' +
+      '<input id="' + idPrefix + '-ukuran-value" class="field-input" placeholder="Contoh: 110x110x14" autocomplete="off" value="' + esc(ukuran) + '">' +
     '</div>'
   );
 }
@@ -1249,7 +1249,6 @@ function bindCombobox(idPrefix) {
   const input = document.getElementById(idPrefix + '-input');
   const panel = document.getElementById(idPrefix + '-panel');
   const clearBtn = document.getElementById(idPrefix + '-clear');
-  const ukuranLabel = document.getElementById(idPrefix + '-ukuran');
   const ukuranValue = document.getElementById(idPrefix + '-ukuran-value');
 
   const closePanel = () => panel.classList.remove('open');
@@ -1270,8 +1269,6 @@ function bindCombobox(idPrefix) {
   };
 
   input.addEventListener('input', () => {
-    ukuranValue.value = '';
-    ukuranLabel.textContent = '-';
     clearBtn.style.display = input.value ? 'block' : 'none';
     renderOptions(input.value);
   });
@@ -1282,7 +1279,6 @@ function bindCombobox(idPrefix) {
     if (!btn) return;
     input.value = btn.getAttribute('data-nama');
     ukuranValue.value = btn.getAttribute('data-ukuran');
-    ukuranLabel.textContent = btn.getAttribute('data-ukuran') || '-';
     clearBtn.style.display = 'block';
     closePanel();
   });
@@ -1290,7 +1286,6 @@ function bindCombobox(idPrefix) {
   clearBtn.addEventListener('click', () => {
     input.value = '';
     ukuranValue.value = '';
-    ukuranLabel.textContent = '-';
     clearBtn.style.display = 'none';
     input.focus();
   });
