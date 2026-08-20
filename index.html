@@ -481,6 +481,7 @@ const state = {
   },
   editing: { poin: null, produksi: null, keluar: null },
   dateFilter: { poin: '', produksi: '', keluar: '' }, // yyyy-mm-dd or '' = show all, used to narrow the history list for editing
+  stokHabisOpen: false, // whether the "stok habis" section on the Stok tab is expanded
   pinModal: null,
   live: false, // true once realtime subscriptions are connected
 };
@@ -1680,9 +1681,14 @@ function renderStokTab() {
   const agg = computeAggregates();
   const rows = agg.filter((r) => r.produksi > 0 || r.keluar > 0 || r.stokAwal !== 0).sort((a, b) => a.stok - b.stok);
   const totalStok = rows.reduce((s, r) => s + r.stok, 0);
-  const habis = rows.filter((r) => r.stok <= 0).length;
 
+  // Only customers that still have pallets on hand show in the main list up
+  // top; customers whose stock is used up (stok <= 0) are moved to a
+  // collapsible section below so they don't clutter the main view.
   const withStok = rows.filter((r) => r.stok > 0);
+  const habisRows = rows.filter((r) => r.stok <= 0);
+  const habis = habisRows.length;
+
   const totalSiapWH = withStok.reduce((s, r) => s + r.siapWH, 0);
   const totalBelumWH = withStok.reduce((s, r) => s + r.belumWH, 0);
 
@@ -1700,7 +1706,14 @@ function renderStokTab() {
         '</div>' +
         '<button type="button" id="open-review" class="btn-review">&#128196; Lihat &amp; Unduh Laporan Stok (JPG)</button>' +
       '</div>' +
-      '<div id="stok-list">' + renderStokList(rows, '') + '</div>' +
+      '<div id="stok-list">' + renderStokList(withStok, '') + '</div>' +
+
+      '<div class="card">' +
+        '<button type="button" id="stok-habis-toggle" class="btn-link">' +
+          (state.stokHabisOpen ? '&#9650; Sembunyikan' : '&#9660; Tampilkan') + ' ' + habis + ' Item Stok Habis' +
+        '</button>' +
+        (state.stokHabisOpen ? '<div id="stok-habis-list">' + renderStokList(habisRows, '') + '</div>' : '') +
+      '</div>' +
 
       '<div class="card">' +
         '<div class="card-head"><div class="card-head-icon">&#128666;</div><div><div class="card-title">Resume Siap Kirim WH</div><div class="card-subtitle">Dari total stok pallet yang tersedia</div></div></div>' +
@@ -2564,11 +2577,25 @@ function bindOsEvents() {
 function bindStokEvents() {
   const agg = computeAggregates();
   const rows = agg.filter((r) => r.produksi > 0 || r.keluar > 0 || r.stokAwal !== 0).sort((a, b) => a.stok - b.stok);
+  const withStok = rows.filter((r) => r.stok > 0);
+  const habisRows = rows.filter((r) => r.stok <= 0);
+
   const search = document.getElementById('stok-search');
   search.addEventListener('input', () => {
-    document.getElementById('stok-list').innerHTML = renderStokList(rows, search.value);
+    document.getElementById('stok-list').innerHTML = renderStokList(withStok, search.value);
+    const habisList = document.getElementById('stok-habis-list');
+    if (habisList) habisList.innerHTML = renderStokList(habisRows, search.value);
     bindWhInputs();
   });
+
+  const habisToggle = document.getElementById('stok-habis-toggle');
+  if (habisToggle) {
+    habisToggle.addEventListener('click', () => {
+      state.stokHabisOpen = !state.stokHabisOpen;
+      render();
+    });
+  }
+
   const openReview = document.getElementById('open-review');
   if (openReview) {
     openReview.addEventListener('click', () => {
