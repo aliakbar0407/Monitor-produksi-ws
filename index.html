@@ -204,6 +204,10 @@ button, input { font-family: inherit; }
 .btn-primary:active { background: #C4551C; }
 
 .list-title { font-family: 'Bitter', serif; font-weight: 700; font-size: 13.5px; color: #344DA1; padding: 0 2px; }
+.date-filter-row { margin: 8px 2px 10px; }
+.date-filter-controls { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.date-filter-controls .field-input { flex: 1; }
+.date-filter-clear { white-space: nowrap; padding: 8px 10px; font-size: 12px; }
 .record-list { display: flex; flex-direction: column; gap: 8px; }
 .record-row { background: #FFFFFF; border: 1px solid #DCE2F0; border-radius: 12px; padding: 12px; display: flex; align-items: center; gap: 10px; }
 .record-main { flex: 1; min-width: 0; }
@@ -476,6 +480,7 @@ const state = {
     keluar: { from: firstDayOfMonthISO(), to: todayISO() },
   },
   editing: { poin: null, produksi: null, keluar: null },
+  dateFilter: { poin: '', produksi: '', keluar: '' }, // yyyy-mm-dd or '' = show all, used to narrow the history list for editing
   pinModal: null,
   live: false, // true once realtime subscriptions are connected
 };
@@ -1433,6 +1438,28 @@ function emptyState(text) {
   return '<div class="empty-state">&#127795;<span>' + esc(text) + '</span></div>';
 }
 
+// Filters a list of records (must have a `.tanggal` field, yyyy-mm-dd) down
+// to a single date. Empty/falsy `date` means "show all" (no filtering).
+function filterByDate(rows, date) {
+  if (!date) return rows;
+  return rows.filter((r) => r.tanggal === date);
+}
+
+// Renders a small "Filter tanggal" control (date input + clear button) used
+// above the history list on PO Masuk / Produksi / Pallet Keluar tabs, so a
+// specific day's entries can be found quickly for editing.
+function dateFilterMarkup(idPrefix, value) {
+  return (
+    '<div class="date-filter-row">' +
+      '<label class="field-label" for="' + idPrefix + '-datefilter">Filter Tanggal</label>' +
+      '<div class="date-filter-controls">' +
+        '<input type="date" id="' + idPrefix + '-datefilter" class="field-input mono" value="' + esc(value || '') + '">' +
+        (value ? '<button type="button" id="' + idPrefix + '-datefilter-clear" class="btn-secondary date-filter-clear">Tampilkan Semua</button>' : '') +
+      '</div>' +
+    '</div>'
+  );
+}
+
 // ---------------- PO Masuk ----------------
 function renderPoInTab() {
   const editId = state.editing.poin;
@@ -1463,23 +1490,28 @@ function renderPoInTab() {
         '</div>' +
       '</div>' +
       '<div class="list-title">Riwayat PO Masuk (' + state.poIn.length + ')</div>' +
+      dateFilterMarkup('poin', state.dateFilter.poin) +
       '<button type="button" id="open-report-poin" class="btn-review">&#128196; Lihat &amp; Unduh Resume PO Masuk (JPG)</button>' +
-      (state.poIn.length === 0 ? emptyState('Belum ada PO masuk yang dicatat.') : (
-        '<div class="record-list">' + state.poIn.map((r) => (
-          '<div class="record-row">' +
-            '<div class="record-main">' +
-              '<div class="record-name">' + esc(r.nama) + '</div>' +
-              '<div class="record-meta">' + esc(r.ukuran || '-') + ' &middot; ' + fmtDate(r.tanggal) + (r.noPo ? ' &middot; PO ' + esc(r.noPo) : '') + '</div>' +
-              (r.tglKirim ? '<div class="record-meta">Kirim: ' + fmtDate(r.tglKirim) + '</div>' : '') +
-              (r.catatan ? '<div class="record-note">' + esc(r.catatan) + '</div>' : '') +
-            '</div>' +
-            '<div class="record-qty">' + fmtNum(r.qty) + '<span>pcs</span></div>' +
-            '<button type="button" class="record-edit" data-edit-poin="' + r.id + '">&#9998;</button>' +
-            '<button type="button" class="record-delete" data-remove-poin="' + r.id + '" data-label="' + esc('PO ' + r.nama + ' (' + fmtNum(r.qty) + ' pcs)') + '">&#128465;</button>' +
-          '</div>'
-        )).join('') + '</div>'
-      )) +
+      '<div id="poin-list">' + renderPoInList(filterByDate(state.poIn, state.dateFilter.poin)) + '</div>' +
     '</div>'
+  );
+}
+function renderPoInList(rows) {
+  if (rows.length === 0) return emptyState('Belum ada PO masuk yang dicatat.');
+  return (
+    '<div class="record-list">' + rows.map((r) => (
+      '<div class="record-row">' +
+        '<div class="record-main">' +
+          '<div class="record-name">' + esc(r.nama) + '</div>' +
+          '<div class="record-meta">' + esc(r.ukuran || '-') + ' &middot; ' + fmtDate(r.tanggal) + (r.noPo ? ' &middot; PO ' + esc(r.noPo) : '') + '</div>' +
+          (r.tglKirim ? '<div class="record-meta">Kirim: ' + fmtDate(r.tglKirim) + '</div>' : '') +
+          (r.catatan ? '<div class="record-note">' + esc(r.catatan) + '</div>' : '') +
+        '</div>' +
+        '<div class="record-qty">' + fmtNum(r.qty) + '<span>pcs</span></div>' +
+        '<button type="button" class="record-edit" data-edit-poin="' + r.id + '">&#9998;</button>' +
+        '<button type="button" class="record-delete" data-remove-poin="' + r.id + '" data-label="' + esc('PO ' + r.nama + ' (' + fmtNum(r.qty) + ' pcs)') + '">&#128465;</button>' +
+      '</div>'
+    )).join('') + '</div>'
   );
 }
 
@@ -1522,22 +1554,27 @@ function renderProduksiTab() {
         '</div>' +
       '</div>' +
       '<div class="list-title">Riwayat Produksi (' + state.produksi.length + ')</div>' +
+      dateFilterMarkup('produksi', state.dateFilter.produksi) +
       '<button type="button" id="open-report-produksi" class="btn-review">&#128196; Lihat &amp; Unduh Resume Produksi (JPG)</button>' +
-      (state.produksi.length === 0 ? emptyState('Belum ada hasil produksi yang dicatat.') : (
-        '<div class="record-list">' + state.produksi.map((r) => (
-          '<div class="record-row">' +
-            '<div class="record-main">' +
-              '<div class="record-name">' + esc(r.nama) + (r.sumber === 'subcont' ? ' <span class="type-tag po">SUBCONT</span>' : '') + '</div>' +
-              '<div class="record-meta">' + esc(r.ukuran || '-') + ' &middot; ' + fmtDate(r.tanggal) + (r.sumber === 'subcont' && r.subcontNama ? ' &middot; dari ' + esc(r.subcontNama) : '') + '</div>' +
-              (r.catatan ? '<div class="record-note">' + esc(r.catatan) + '</div>' : '') +
-            '</div>' +
-            '<div class="record-qty good">' + fmtNum(r.qty) + '<span>pcs</span></div>' +
-            '<button type="button" class="record-edit" data-edit-prod="' + r.id + '">&#9998;</button>' +
-            '<button type="button" class="record-delete" data-remove-prod="' + r.id + '" data-label="' + esc('Produksi ' + r.nama + ' (' + fmtNum(r.qty) + ' pcs)') + '">&#128465;</button>' +
-          '</div>'
-        )).join('') + '</div>'
-      )) +
+      '<div id="produksi-list">' + renderProduksiList(filterByDate(state.produksi, state.dateFilter.produksi)) + '</div>' +
     '</div>'
+  );
+}
+function renderProduksiList(rows) {
+  if (rows.length === 0) return emptyState('Belum ada hasil produksi yang dicatat.');
+  return (
+    '<div class="record-list">' + rows.map((r) => (
+      '<div class="record-row">' +
+        '<div class="record-main">' +
+          '<div class="record-name">' + esc(r.nama) + (r.sumber === 'subcont' ? ' <span class="type-tag po">SUBCONT</span>' : '') + '</div>' +
+          '<div class="record-meta">' + esc(r.ukuran || '-') + ' &middot; ' + fmtDate(r.tanggal) + (r.sumber === 'subcont' && r.subcontNama ? ' &middot; dari ' + esc(r.subcontNama) : '') + '</div>' +
+          (r.catatan ? '<div class="record-note">' + esc(r.catatan) + '</div>' : '') +
+        '</div>' +
+        '<div class="record-qty good">' + fmtNum(r.qty) + '<span>pcs</span></div>' +
+        '<button type="button" class="record-edit" data-edit-prod="' + r.id + '">&#9998;</button>' +
+        '<button type="button" class="record-delete" data-remove-prod="' + r.id + '" data-label="' + esc('Produksi ' + r.nama + ' (' + fmtNum(r.qty) + ' pcs)') + '">&#128465;</button>' +
+      '</div>'
+    )).join('') + '</div>'
   );
 }
 
@@ -1570,22 +1607,27 @@ function renderKeluarTab() {
         '</div>' +
       '</div>' +
       '<div class="list-title">Riwayat Pallet Keluar (' + state.keluar.length + ')</div>' +
+      dateFilterMarkup('keluar', state.dateFilter.keluar) +
       '<button type="button" id="open-report-keluar" class="btn-review">&#128196; Lihat &amp; Unduh Laporan Mutasi (JPG)</button>' +
-      (state.keluar.length === 0 ? emptyState('Belum ada pallet keluar yang dicatat.') : (
-        '<div class="record-list">' + state.keluar.map((r) => (
-          '<div class="record-row">' +
-            '<div class="record-main">' +
-              '<div class="record-name">' + esc(r.nama) + '</div>' +
-              '<div class="record-meta">' + esc(r.ukuran || '-') + ' &middot; ' + fmtDate(r.tanggal) + (r.nopol ? ' &middot; ' + esc(r.nopol) : '') + '</div>' +
-              (r.catatan ? '<div class="record-note">' + esc(r.catatan) + '</div>' : '') +
-            '</div>' +
-            '<div class="record-qty out">' + fmtNum(r.qty) + '<span>pcs</span></div>' +
-            '<button type="button" class="record-edit" data-edit-keluar="' + r.id + '">&#9998;</button>' +
-            '<button type="button" class="record-delete" data-remove-keluar="' + r.id + '" data-label="' + esc('Pallet keluar ' + r.nama + ' (' + fmtNum(r.qty) + ' pcs)') + '">&#128465;</button>' +
-          '</div>'
-        )).join('') + '</div>'
-      )) +
+      '<div id="keluar-list">' + renderKeluarList(filterByDate(state.keluar, state.dateFilter.keluar)) + '</div>' +
     '</div>'
+  );
+}
+function renderKeluarList(rows) {
+  if (rows.length === 0) return emptyState('Belum ada pallet keluar yang dicatat.');
+  return (
+    '<div class="record-list">' + rows.map((r) => (
+      '<div class="record-row">' +
+        '<div class="record-main">' +
+          '<div class="record-name">' + esc(r.nama) + '</div>' +
+          '<div class="record-meta">' + esc(r.ukuran || '-') + ' &middot; ' + fmtDate(r.tanggal) + (r.nopol ? ' &middot; ' + esc(r.nopol) : '') + '</div>' +
+          (r.catatan ? '<div class="record-note">' + esc(r.catatan) + '</div>' : '') +
+        '</div>' +
+        '<div class="record-qty out">' + fmtNum(r.qty) + '<span>pcs</span></div>' +
+        '<button type="button" class="record-edit" data-edit-keluar="' + r.id + '">&#9998;</button>' +
+        '<button type="button" class="record-delete" data-remove-keluar="' + r.id + '" data-label="' + esc('Pallet keluar ' + r.nama + ' (' + fmtNum(r.qty) + ' pcs)') + '">&#128465;</button>' +
+      '</div>'
+    )).join('') + '</div>'
   );
 }
 
@@ -2408,6 +2450,11 @@ function bindPoInEvents() {
     btn.addEventListener('click', () => requestDelete('poin', btn.getAttribute('data-remove-poin'), btn.getAttribute('data-label')));
   });
 
+  const dateFilter = document.getElementById('poin-datefilter');
+  if (dateFilter) dateFilter.addEventListener('change', () => { state.dateFilter.poin = dateFilter.value; render(); });
+  const dateFilterClear = document.getElementById('poin-datefilter-clear');
+  if (dateFilterClear) dateFilterClear.addEventListener('click', () => { state.dateFilter.poin = ''; render(); });
+
   const openReportBtn = document.getElementById('open-report-poin');
   if (openReportBtn) openReportBtn.addEventListener('click', () => openReport('poin'));
 }
@@ -2453,6 +2500,11 @@ function bindProduksiEvents() {
     btn.addEventListener('click', () => requestDelete('produksi', btn.getAttribute('data-remove-prod'), btn.getAttribute('data-label')));
   });
 
+  const dateFilter = document.getElementById('produksi-datefilter');
+  if (dateFilter) dateFilter.addEventListener('change', () => { state.dateFilter.produksi = dateFilter.value; render(); });
+  const dateFilterClear = document.getElementById('produksi-datefilter-clear');
+  if (dateFilterClear) dateFilterClear.addEventListener('click', () => { state.dateFilter.produksi = ''; render(); });
+
   const openReportBtn = document.getElementById('open-report-produksi');
   if (openReportBtn) openReportBtn.addEventListener('click', () => openReport('produksi'));
 }
@@ -2488,6 +2540,11 @@ function bindKeluarEvents() {
   document.querySelectorAll('[data-remove-keluar]').forEach((btn) => {
     btn.addEventListener('click', () => requestDelete('keluar', btn.getAttribute('data-remove-keluar'), btn.getAttribute('data-label')));
   });
+
+  const dateFilter = document.getElementById('keluar-datefilter');
+  if (dateFilter) dateFilter.addEventListener('change', () => { state.dateFilter.keluar = dateFilter.value; render(); });
+  const dateFilterClear = document.getElementById('keluar-datefilter-clear');
+  if (dateFilterClear) dateFilterClear.addEventListener('click', () => { state.dateFilter.keluar = ''; render(); });
 
   const openReportBtn = document.getElementById('open-report-keluar');
   if (openReportBtn) openReportBtn.addEventListener('click', () => openReport('keluar'));
