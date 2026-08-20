@@ -152,6 +152,11 @@ button, input { font-family: inherit; }
 .settings-msg.success { background: #DFF3E6; color: #2F8F5B; }
 .settings-msg.error { background: #FBE4E1; color: #C0392B; }
 .me-tag { background: #E7ECF8; color: #344DA1; font-size: 9.5px; font-weight: 700; padding: 1px 6px; border-radius: 5px; text-transform: uppercase; }
+.truck-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.truck-chip {
+  background: #F0F3FB; color: #344DA1; font-family: 'JetBrains Mono', monospace; font-weight: 700;
+  font-size: 12px; padding: 6px 10px; border-radius: 8px; border: 1px solid #DCE2F0;
+}
 
 .tab-body { padding: 16px 14px 8px; display: flex; flex-direction: column; gap: 16px; flex: 1; }
 .card { background: #FFFFFF; border: 1px solid #DCE2F0; border-radius: 14px; padding: 16px; box-shadow: 0 1px 2px rgba(30,42,74,0.05); }
@@ -453,6 +458,7 @@ const state = {
   produksi: [],
   keluar: [],
   readyWH: {},              // { [nama]: qty already confirmed ready to send to WH }
+  trucks: [],                // saved list of truck plate numbers (still free-text friendly)
   tab: 'dashboard',
   reviewOpen: false,
   settingsOpen: false,
@@ -551,16 +557,18 @@ async function initPin() {
 async function initStore() {
   await initBaseline();
   try {
-    const [{ data: poRows }, { data: prodRows }, { data: keluarRows }, { data: whRows }] = await Promise.all([
+    const [{ data: poRows }, { data: prodRows }, { data: keluarRows }, { data: whRows }, { data: truckRows }] = await Promise.all([
       sb.from('po_masuk').select('*').order('tanggal', { ascending: false }),
       sb.from('produksi').select('*').order('tanggal', { ascending: false }),
       sb.from('pallet_keluar').select('*').order('tanggal', { ascending: false }),
       sb.from('stok_ready_wh').select('*'),
+      sb.from('trucks').select('*').order('nopol', { ascending: true }),
     ]);
     state.poIn = (poRows || []).map(dbToPoIn);
     state.produksi = (prodRows || []).map(dbToProduksi);
     state.keluar = (keluarRows || []).map(dbToKeluar);
     state.readyWH = {}; (whRows || []).forEach((r) => { state.readyWH[r.nama] = r.qty; });
+    state.trucks = (truckRows || []).map((r) => r.nopol);
   } catch (e) {
     // if this fails, the tabs will just show empty until a refresh succeeds
   }
@@ -602,6 +610,17 @@ function subscribeRealtime() {
     })
     .subscribe();
 
+  sb.channel('trucks-live')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'trucks' }, (payload) => {
+      if (payload.eventType === 'DELETE') {
+        state.trucks = state.trucks.filter((n) => n !== payload.old.nopol);
+      } else if (state.trucks.indexOf(payload.new.nopol) === -1) {
+        state.trucks = state.trucks.concat([payload.new.nopol]).sort();
+      }
+      render();
+    })
+    .subscribe();
+
   sb.channel('os_awal-live')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'os_awal' }, (payload) => {
       if (payload.eventType === 'DELETE') delete OS_AWAL[payload.old.nama];
@@ -637,6 +656,18 @@ async function saveBaseline(nama, osQty, stokQty) {
   }
   OS_AWAL[namaTrim] = os;
   STOK_AWAL[namaTrim] = stok;
+  render();
+  return { ok: true };
+}
+
+// ---------------- Saved truck plate list ----------------
+async function addTruck(nopol) {
+  const clean = nopol.trim().toUpperCase();
+  if (!clean) return { ok: false, error: 'Ketik nomor polisi dulu.' };
+  if (state.trucks.indexOf(clean) !== -1) return { ok: false, error: 'Nopol itu sudah ada di daftar.' };
+  const { error } = await sb.from('trucks').upsert({ nopol: clean }, { onConflict: 'nopol' });
+  if (error) return { ok: false, error: 'Gagal menyimpan: ' + error.message };
+  state.trucks = state.trucks.concat([clean]).sort();
   render();
   return { ok: true };
 }
@@ -768,11 +799,18 @@ async function setReadyWH(nama, qty) {
   const item = agg.find((r) => r.nama === nama);
   const maxStok = item ? Math.max(item.stok, 0) : 0;
   const clamped = Math.max(0, Math.min(Number(qty) || 0, maxStok));
+  const prevValue = state.readyWH[nama];
   state.readyWH = Object.assign({}, state.readyWH, { [nama]: clamped });
   render();
-  await sb.from('stok_ready_wh').upsert({
+  const { error } = await sb.from('stok_ready_wh').upsert({
     nama, qty: clamped, updated_by: state.account ? state.account.nama : '',
   }, { onConflict: 'nama' });
+  if (error) {
+    console.error('setReadyWH', error);
+    state.readyWH = Object.assign({}, state.readyWH, { [nama]: prevValue });
+    render();
+    alert('Gagal menyimpan siap kirim WH: ' + error.message);
+  }
 }
 
 // ---------------- Edit mode ----------------
@@ -1265,6 +1303,73 @@ function bindCombobox(idPrefix) {
 function comboNama(idPrefix) { return (document.getElementById(idPrefix + '-input') || {}).value || ''; }
 function comboUkuran(idPrefix) { return (document.getElementById(idPrefix + '-ukuran-value') || {}).value || ''; }
 
+// ---------------- Lightweight combobox for saved truck plates ----------------
+// Same idea as the customer combobox, but simpler (single value, no second
+// field) and always free-typing -- picking a suggestion is a shortcut, not
+// a requirement, since any truck plate is allowed.
+function truckComboMarkup(idPrefix, initialValue) {
+  const val = initialValue || '';
+  return (
+    '<div class="field-combo">' +
+      '<label class="field-label">Nopol Truck</label>' +
+      '<div class="combo-input-wrap">' +
+        '<span class="combo-icon">&#128666;</span>' +
+        '<input id="' + idPrefix + '-input" class="field-input" style="padding-left:32px;" placeholder="Pilih dari daftar atau ketik nopol lain" autocomplete="off" value="' + esc(val) + '">' +
+        '<button type="button" id="' + idPrefix + '-clear" class="combo-clear" style="display:' + (val ? 'block' : 'none') + ';">&times;</button>' +
+      '</div>' +
+      '<div id="' + idPrefix + '-panel" class="combo-panel"></div>' +
+    '</div>'
+  );
+}
+
+function bindTruckCombobox(idPrefix) {
+  const input = document.getElementById(idPrefix + '-input');
+  const panel = document.getElementById(idPrefix + '-panel');
+  const clearBtn = document.getElementById(idPrefix + '-clear');
+
+  const closePanel = () => panel.classList.remove('open');
+
+  const renderOptions = (query) => {
+    const q = (query || '').trim().toLowerCase();
+    const results = q
+      ? state.trucks.filter((n) => n.toLowerCase().indexOf(q) !== -1)
+      : state.trucks;
+    if (results.length === 0) { closePanel(); return; }
+    panel.innerHTML = results.map((n) => (
+      '<button type="button" class="combo-option" data-nopol="' + esc(n) + '">' +
+        '<span class="combo-option-name">' + esc(n) + '</span>' +
+      '</button>'
+    )).join('');
+    panel.classList.add('open');
+  };
+
+  input.addEventListener('input', () => {
+    clearBtn.style.display = input.value ? 'block' : 'none';
+    renderOptions(input.value);
+  });
+  input.addEventListener('focus', () => renderOptions(input.value));
+
+  panel.addEventListener('click', (e) => {
+    const btn = e.target.closest('.combo-option');
+    if (!btn) return;
+    input.value = btn.getAttribute('data-nopol');
+    clearBtn.style.display = 'block';
+    closePanel();
+  });
+
+  clearBtn.addEventListener('click', () => {
+    input.value = '';
+    clearBtn.style.display = 'none';
+    input.focus();
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!input.contains(e.target) && !panel.contains(e.target) && e.target !== input) closePanel();
+  });
+}
+
+function truckComboValue(idPrefix) { return (document.getElementById(idPrefix + '-input') || {}).value || ''; }
+
 function emptyState(text) {
   return '<div class="empty-state">&#127795;<span>' + esc(text) + '</span></div>';
 }
@@ -1386,7 +1491,7 @@ function renderKeluarTab() {
           '<div class="field"><label class="field-label">Tanggal Kirim</label><input type="date" id="keluar-tanggal" class="field-input" value="' + esc(isEdit ? editRecord.tanggal : todayISO()) + '"></div>' +
           comboMarkup('keluar-nama', isEdit ? editRecord.nama : '', isEdit ? editRecord.ukuran : '') +
           '<div class="field"><label class="field-label">Qty Keluar (pcs)</label><input type="number" min="0" id="keluar-qty" class="field-input mono" placeholder="0" value="' + esc(isEdit ? editRecord.qty : '') + '"></div>' +
-          '<div class="field"><label class="field-label">Nopol Truck</label><input id="keluar-nopol" class="field-input" placeholder="B 9270 UDE" value="' + esc(isEdit ? editRecord.nopol : '') + '"></div>' +
+          truckComboMarkup('keluar-nopol', isEdit ? editRecord.nopol : '') +
           '<div class="field"><label class="field-label">Catatan</label><input id="keluar-catatan" class="field-input" placeholder="Opsional" value="' + esc(isEdit ? editRecord.catatan : '') + '"></div>' +
           '<div class="form-actions">' +
             (isEdit ? '<button type="button" id="keluar-cancel-edit-2" class="btn-secondary">Batal</button>' : '') +
@@ -1917,6 +2022,16 @@ function renderSettingsOverlay() {
       '<div class="settings-stack">' +
 
         '<div class="card">' +
+          '<div class="card-head"><div class="card-head-icon">&#128666;</div><div><div class="card-title">Daftar Nopol Truk</div><div class="card-subtitle">Muncul sebagai pilihan cepat di menu Keluar</div></div></div>' +
+          '<div id="truck-msg" class="settings-msg" style="display:none;"></div>' +
+          '<div id="truck-list">' + renderTruckChips() + '</div>' +
+          '<div class="form-grid" style="margin-top:10px;">' +
+            '<div class="field"><label class="field-label">Tambah Nopol Baru</label><input id="truck-new-input" class="field-input mono" placeholder="B 1234 XYZ"></div>' +
+            '<button type="button" id="truck-add" class="btn-primary">+ Tambah ke Daftar</button>' +
+          '</div>' +
+        '</div>' +
+
+        '<div class="card">' +
           '<div class="card-head"><div class="card-head-icon">&#128203;</div><div><div class="card-title">Atur Saldo Awal</div><div class="card-subtitle">OS Awal &amp; Stok Awal per customer (dipakai sebagai titik awal perhitungan)</div></div></div>' +
           '<div id="baseline-msg" class="settings-msg" style="display:none;"></div>' +
           '<div class="form-grid">' +
@@ -2009,6 +2124,7 @@ function bindSettingsEvents() {
 
   loadTeamMembers();
   bindBaselineForm();
+  bindTruckList();
 
   const logoutBtn = document.getElementById('settings-logout');
   if (logoutBtn) logoutBtn.addEventListener('click', () => { closeSettings(); doLogout(); });
@@ -2072,6 +2188,35 @@ function bindSettingsEvents() {
       showSettingsMsg('pin-change-msg', 'PIN berhasil diganti.', false);
     });
   }
+}
+
+function renderTruckChips() {
+  if (state.trucks.length === 0) return '<div class="empty-state" style="padding:12px;">Belum ada nopol tersimpan.</div>';
+  return '<div class="truck-chips">' + state.trucks.map((n) => (
+    '<span class="truck-chip">' + esc(n) + '</span>'
+  )).join('') + '</div>';
+}
+
+function bindTruckList() {
+  const addBtn = document.getElementById('truck-add');
+  const input = document.getElementById('truck-new-input');
+  if (!addBtn) return;
+  addBtn.addEventListener('click', async () => {
+    const val = input.value || '';
+    addBtn.textContent = 'Menyimpan...';
+    const result = await addTruck(val);
+    addBtn.innerHTML = '+ Tambah ke Daftar';
+    if (!result.ok) {
+      showSettingsMsg('truck-msg', result.error, true);
+      return;
+    }
+    input.value = '';
+    document.getElementById('truck-list').innerHTML = renderTruckChips();
+    showSettingsMsg('truck-msg', 'Nopol berhasil ditambahkan ke daftar.', false);
+  });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); addBtn.click(); }
+  });
 }
 
 function bindBaselineForm() {
@@ -2233,6 +2378,7 @@ function bindProduksiEvents() {
 
 function bindKeluarEvents() {
   bindCombobox('keluar-nama');
+  bindTruckCombobox('keluar-nopol');
 
   document.getElementById('keluar-submit').addEventListener('click', () => {
     const nama = comboNama('keluar-nama');
@@ -2243,7 +2389,7 @@ function bindKeluarEvents() {
       nama: nama,
       ukuran: comboUkuran('keluar-nama'),
       qty: Number(qty),
-      nopol: (document.getElementById('keluar-nopol').value || '').toUpperCase(),
+      nopol: (truckComboValue('keluar-nopol') || '').toUpperCase(),
       catatan: document.getElementById('keluar-catatan').value,
     };
     if (state.editing.keluar) updateKeluar(state.editing.keluar, record);
