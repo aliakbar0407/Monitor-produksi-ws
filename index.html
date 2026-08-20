@@ -500,11 +500,16 @@ function dbToPoIn(row) {
 function produksiToDb(r) {
   return {
     id: r.id, tanggal: r.tanggal, nama: r.nama, ukuran: r.ukuran || '', qty: Number(r.qty) || 0,
+    sumber: r.sumber || 'sendiri', subcont_nama: r.subcontNama || '',
     catatan: r.catatan || '', created_by: r.created_by || (state.account ? state.account.nama : ''),
   };
 }
 function dbToProduksi(row) {
-  return { id: row.id, tanggal: row.tanggal, nama: row.nama, ukuran: row.ukuran || '', qty: row.qty, catatan: row.catatan || '', created_by: row.created_by || '' };
+  return {
+    id: row.id, tanggal: row.tanggal, nama: row.nama, ukuran: row.ukuran || '', qty: row.qty,
+    sumber: row.sumber || 'sendiri', subcontNama: row.subcont_nama || '',
+    catatan: row.catatan || '', created_by: row.created_by || '',
+  };
 }
 function keluarToDb(r) {
   return {
@@ -979,12 +984,14 @@ function computeProduksiReport(from, to) {
   const map = {};
   filtered.forEach((r) => {
     const key = r.nama;
-    if (!map[key]) map[key] = { nama: r.nama, ukuran: r.ukuran || DB_MAP[r.nama] || '', qty: 0 };
+    if (!map[key]) map[key] = { nama: r.nama, ukuran: r.ukuran || CUSTOMER_MAP[r.nama] || '', qty: 0, qtySubcont: 0 };
     map[key].qty += Number(r.qty) || 0;
+    if (r.sumber === 'subcont') map[key].qtySubcont += Number(r.qty) || 0;
   });
   const rows = Object.values(map).sort((a, b) => b.qty - a.qty);
   const totalQty = rows.reduce((s, r) => s + r.qty, 0);
-  return { rows, totalJenis: rows.length, totalQty };
+  const totalSubcont = rows.reduce((s, r) => s + r.qtySubcont, 0);
+  return { rows, totalJenis: rows.length, totalQty, totalSubcont };
 }
 
 function computeOsReport(to) {
@@ -1496,6 +1503,17 @@ function renderProduksiTab() {
           '<div class="field"><label class="field-label">Tanggal Produksi</label><input type="date" id="prod-tanggal" class="field-input" value="' + esc(isEdit ? editRecord.tanggal : todayISO()) + '"></div>' +
           comboMarkup('prod-nama', isEdit ? editRecord.nama : '', isEdit ? editRecord.ukuran : '') +
           '<div class="field"><label class="field-label">Hasil Produksi (pcs)</label><input type="number" min="0" id="prod-qty" class="field-input mono" placeholder="0" value="' + esc(isEdit ? editRecord.qty : '') + '"></div>' +
+          '<div class="field">' +
+            '<label class="field-label">Sumber</label>' +
+            '<select id="prod-sumber" class="field-input">' +
+              '<option value="sendiri"' + ((!isEdit || editRecord.sumber !== 'subcont') ? ' selected' : '') + '>Produksi Sendiri</option>' +
+              '<option value="subcont"' + (isEdit && editRecord.sumber === 'subcont' ? ' selected' : '') + '>Beli dari Subcont</option>' +
+            '</select>' +
+          '</div>' +
+          '<div class="field" id="prod-subcont-wrap" style="' + (isEdit && editRecord.sumber === 'subcont' ? '' : 'display:none;') + '">' +
+            '<label class="field-label">Nama Subcont / Supplier</label>' +
+            '<input id="prod-subcont-nama" class="field-input" placeholder="Contoh: Pak Budi / CV. Mitra Palet" value="' + esc(isEdit ? (editRecord.subcontNama || '') : '') + '">' +
+          '</div>' +
           '<div class="field"><label class="field-label">Catatan</label><input id="prod-catatan" class="field-input" placeholder="Opsional" value="' + esc(isEdit ? editRecord.catatan : '') + '"></div>' +
           '<div class="form-actions">' +
             (isEdit ? '<button type="button" id="prod-cancel-edit-2" class="btn-secondary">Batal</button>' : '') +
@@ -1509,8 +1527,8 @@ function renderProduksiTab() {
         '<div class="record-list">' + state.produksi.map((r) => (
           '<div class="record-row">' +
             '<div class="record-main">' +
-              '<div class="record-name">' + esc(r.nama) + '</div>' +
-              '<div class="record-meta">' + esc(r.ukuran || '-') + ' &middot; ' + fmtDate(r.tanggal) + '</div>' +
+              '<div class="record-name">' + esc(r.nama) + (r.sumber === 'subcont' ? ' <span class="type-tag po">SUBCONT</span>' : '') + '</div>' +
+              '<div class="record-meta">' + esc(r.ukuran || '-') + ' &middot; ' + fmtDate(r.tanggal) + (r.sumber === 'subcont' && r.subcontNama ? ' &middot; dari ' + esc(r.subcontNama) : '') + '</div>' +
               (r.catatan ? '<div class="record-note">' + esc(r.catatan) + '</div>' : '') +
             '</div>' +
             '<div class="record-qty good">' + fmtNum(r.qty) + '<span>pcs</span></div>' +
@@ -2397,15 +2415,26 @@ function bindPoInEvents() {
 function bindProduksiEvents() {
   bindCombobox('prod-nama');
 
+  const sumberSelect = document.getElementById('prod-sumber');
+  const subcontWrap = document.getElementById('prod-subcont-wrap');
+  if (sumberSelect && subcontWrap) {
+    sumberSelect.addEventListener('change', () => {
+      subcontWrap.style.display = sumberSelect.value === 'subcont' ? '' : 'none';
+    });
+  }
+
   document.getElementById('prod-submit').addEventListener('click', () => {
     const nama = comboNama('prod-nama');
     const qty = document.getElementById('prod-qty').value;
     if (!nama || !qty) return;
+    const sumber = (document.getElementById('prod-sumber') || {}).value || 'sendiri';
     const record = {
       tanggal: document.getElementById('prod-tanggal').value || todayISO(),
       nama: nama,
       ukuran: comboUkuran('prod-nama'),
       qty: Number(qty),
+      sumber: sumber,
+      subcontNama: sumber === 'subcont' ? (document.getElementById('prod-subcont-nama') || {}).value || '' : '',
       catatan: document.getElementById('prod-catatan').value,
     };
     if (state.editing.produksi) updateProduksi(state.editing.produksi, record);
