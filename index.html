@@ -208,6 +208,12 @@ button, input { font-family: inherit; }
 .date-filter-controls { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
 .date-filter-controls .field-input { flex: 1; }
 .date-filter-clear { white-space: nowrap; padding: 8px 10px; font-size: 12px; }
+.sumber-filter-row { display: flex; gap: 6px; margin: 0 2px 10px; flex-wrap: wrap; }
+.sumber-filter-btn {
+  border: 1.5px solid #DCE2F0; background: #FFFFFF; border-radius: 8px; padding: 6px 10px;
+  font-size: 12px; font-weight: 600; color: #4A5578; cursor: pointer; font-family: inherit;
+}
+.sumber-filter-btn.active { background: #344DA1; border-color: #344DA1; color: #FFFFFF; }
 .record-list { display: flex; flex-direction: column; gap: 8px; }
 .record-row { background: #FFFFFF; border: 1px solid #DCE2F0; border-radius: 12px; padding: 12px; display: flex; align-items: center; gap: 10px; }
 .record-main { flex: 1; min-width: 0; }
@@ -531,11 +537,14 @@ const state = {
   },
   editing: { poin: null, produksi: null, keluar: null },
   dateFilter: { poin: '', produksi: '', keluar: '' }, // yyyy-mm-dd or '' = show all, used to narrow the history list for editing
+  produksiSumberFilter: 'semua', // 'semua' | 'sendiri' | 'subcont' -- filters the Riwayat Produksi list only
   stokHabisOpen: false, // whether the "stok habis" section on the Stok tab is expanded
   poBelumOpen: false, // whether the "PO Belum Produksi" dashboard detail overlay is open
   mutasiOpen: false, // whether the live "Cek Mutasi Pallet per Customer" search overlay is open
   mutasiSearch: '',
   mutasiRange: { from: firstDayOfMonthISO(), to: todayISO() },
+  activityLogOpen: false, // whether the full "Log Aktivitas" overlay (all history, browsable) is open
+  activityLogDate: '', // yyyy-mm-dd filter on the real entry date (loggedAt), '' = show all
   pinModal: null,
   live: false, // true once realtime subscriptions are connected
 };
@@ -1111,7 +1120,7 @@ function computeOsReport(to) {
     // Customers already fully covered (os === 0) or over-produced (os < 0)
     // are considered settled and are left out of this resume.
     .filter((r) => r.os > 0)
-    .sort((a, b) => b.os - a.os);
+    .sort((a, b) => a.nama.localeCompare(b.nama));
   const totalPo = rows.reduce((s, r) => s + r.osAwal + r.po, 0);
   const totalProduksiSubcont = rows.reduce((s, r) => s + r.produksi + r.subcont, 0);
   const totalKurang = rows.reduce((s, r) => s + r.os, 0);
@@ -1413,6 +1422,7 @@ function renderShell() {
       '<div id="report-overlay-subcont" class="review-overlay ' + (state.reportOpen.subcont ? 'open' : '') + '">' + (state.reportOpen.subcont ? renderReportOverlay('subcont') : '') + '</div>' +
       '<div id="pobelum-overlay" class="review-overlay ' + (state.poBelumOpen ? 'open' : '') + '">' + (state.poBelumOpen ? renderPoBelumOverlay() : '') + '</div>' +
       '<div id="mutasi-overlay" class="review-overlay ' + (state.mutasiOpen ? 'open' : '') + '">' + (state.mutasiOpen ? renderMutasiOverlay() : '') + '</div>' +
+      '<div id="activitylog-overlay" class="review-overlay ' + (state.activityLogOpen ? 'open' : '') + '">' + (state.activityLogOpen ? renderActivityLogOverlay() : '') + '</div>' +
       (state.pinModal ? renderPinModal() : '') +
     '</div>'
   );
@@ -1459,6 +1469,7 @@ function bindShellEvents() {
   ['poin', 'produksi', 'os', 'keluar', 'subcont'].forEach(bindReportOverlayEvents);
   bindPoBelumEvents();
   bindMutasiEvents();
+  bindActivityLogEvents();
   bindDashboardCardEvents();
 }
 
@@ -1730,11 +1741,21 @@ function renderProduksiTab() {
       '</div>' +
       '<div class="list-title">Riwayat Produksi (' + state.produksi.length + ')</div>' +
       dateFilterMarkup('produksi', state.dateFilter.produksi) +
+      '<div class="sumber-filter-row">' +
+        '<button type="button" class="sumber-filter-btn' + (state.produksiSumberFilter === 'semua' ? ' active' : '') + '" data-sumber-filter="semua">Semua</button>' +
+        '<button type="button" class="sumber-filter-btn' + (state.produksiSumberFilter === 'sendiri' ? ' active' : '') + '" data-sumber-filter="sendiri">Produksi Sendiri</button>' +
+        '<button type="button" class="sumber-filter-btn' + (state.produksiSumberFilter === 'subcont' ? ' active' : '') + '" data-sumber-filter="subcont">Subcont</button>' +
+      '</div>' +
       '<button type="button" id="open-report-produksi" class="btn-review">&#128196; Lihat &amp; Unduh Resume Produksi (JPG)</button>' +
       '<button type="button" id="open-report-subcont" class="btn-review" style="background:#4A5578;margin-top:8px;">&#128196; Lihat &amp; Unduh Resume Subcont (JPG)</button>' +
-      '<div id="produksi-list">' + renderProduksiList(filterByDate(state.produksi, state.dateFilter.produksi)) + '</div>' +
+      '<div id="produksi-list">' + renderProduksiList(filterBySumber(filterByDate(state.produksi, state.dateFilter.produksi), state.produksiSumberFilter)) + '</div>' +
     '</div>'
   );
+}
+function filterBySumber(rows, filter) {
+  if (filter === 'sendiri') return rows.filter((r) => r.sumber !== 'subcont');
+  if (filter === 'subcont') return rows.filter((r) => r.sumber === 'subcont');
+  return rows;
 }
 function renderProduksiList(rows) {
   if (rows.length === 0) return emptyState('Belum ada hasil produksi yang dicatat.');
@@ -1976,14 +1997,7 @@ function renderDashboardTab() {
   // Real-time activity feed: sorted by the actual moment the record was
   // entered/edited (`loggedAt`), not the business date the user typed in --
   // so the newest thing anyone did always shows first, with a real clock time.
-  // Older rows saved before this field existed fall back to their business
-  // date at midnight so they still sort sensibly (just below anything with a
-  // real timestamp).
-  const recent = [
-    ...state.poIn.map((r) => Object.assign({}, r, { _type: 'po', _label: 'PO Masuk', _ts: r.loggedAt || (r.tanggal + 'T00:00:00') })),
-    ...state.produksi.map((r) => Object.assign({}, r, { _type: r.sumber === 'subcont' ? 'po' : 'produksi', _label: r.sumber === 'subcont' ? 'Subcont' : 'Produksi', _ts: r.loggedAt || (r.tanggal + 'T00:00:00') })),
-    ...state.keluar.map((r) => Object.assign({}, r, { _type: 'keluar', _label: 'Keluar', _ts: r.loggedAt || (r.tanggal + 'T00:00:00') })),
-  ].sort((a, b) => (a._ts < b._ts ? 1 : -1)).slice(0, 6);
+  const recent = buildActivityFeed().slice(0, 6);
 
   return (
     '<div class="tab-body">' +
@@ -2024,6 +2038,7 @@ function renderDashboardTab() {
             '</div>'
           )).join('') + '</div>'
         )) +
+        '<button type="button" id="open-activity-log" class="btn-link">Lihat semua aktivitas &rarr;</button>' +
       '</div>' +
     '</div>'
   );
@@ -2465,6 +2480,7 @@ function renderMutasiResults(matched, range) {
             '</div>'
           )).join('') + '</div>'
         )) +
+        '<button type="button" class="btn-link" data-download-mutasi="' + esc(r.nama) + '" data-ukuran="' + esc(r.ukuran || '') + '">&#8681; Unduh JPG Mutasi ' + esc(r.nama) + '</button>' +
       '</div>'
     );
   }).join('');
@@ -2489,6 +2505,140 @@ function bindMutasiEvents() {
   const toInput = document.getElementById('mutasi-to');
   if (fromInput) fromInput.addEventListener('change', () => { state.mutasiRange.from = fromInput.value; render(); });
   if (toInput) toInput.addEventListener('change', () => { state.mutasiRange.to = toInput.value; render(); });
+
+  // Event delegation on the stable results container -- works even after
+  // renderMutasiResults() replaces its innerHTML on every keystroke, since
+  // the listener lives on the parent, not the (re-created) buttons.
+  const resultsEl = document.getElementById('mutasi-results');
+  if (resultsEl) {
+    resultsEl.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-download-mutasi]');
+      if (!btn) return;
+      const nama = btn.getAttribute('data-download-mutasi');
+      const ukuran = btn.getAttribute('data-ukuran') || '';
+      downloadMutasiCustomerJpg(nama, ukuran, state.mutasiRange, btn);
+    });
+  }
+}
+
+// Renders a single-customer letterhead-style report card off-screen, screenshots
+// it as a JPG (reusing the same download/share flow as the other resumes),
+// then cleans up -- so the on-screen search-result card itself doesn't need
+// to carry the full report styling.
+async function downloadMutasiCustomerJpg(nama, ukuran, range, buttonEl) {
+  const detail = computeMutasiDetail(nama, range.from, range.to);
+  const summaryRow = computeMutasiReport(range.from, range.to).rows.find((r) => normKey(r.nama) === normKey(nama));
+  const stokAwal = summaryRow ? summaryRow.stokAwal : 0;
+  const masuk = summaryRow ? summaryRow.masuk : 0;
+  const keluar = summaryRow ? summaryRow.keluar : 0;
+  const sisaStok = summaryRow ? summaryRow.sisaStok : 0;
+  const today = todayISO();
+
+  const html = (
+    reportCardOpen('mutasi-cust', 'Mutasi Pallet - ' + nama, 'Periode: ' + periodLabel(range.from, range.to) + ' &middot; Ukuran: ' + esc(ukuran || '-')) +
+    '<div class="report-resume report-resume-3">' +
+      '<div class="report-resume-box"><div class="report-resume-value">' + fmtNum(stokAwal) + '</div><div class="report-resume-label">Stok Awal</div></div>' +
+      '<div class="report-resume-box good"><div class="report-resume-value">+' + fmtNum(masuk) + '</div><div class="report-resume-label">Masuk</div></div>' +
+      '<div class="report-resume-box warn"><div class="report-resume-value">-' + fmtNum(keluar) + '</div><div class="report-resume-label">Keluar</div></div>' +
+    '</div>' +
+    '<div class="report-note">Sisa stok akhir periode: ' + fmtNum(sisaStok) + ' pcs</div>' +
+    '<table class="report-table"><thead><tr><th>Tanggal</th><th class="num">Masuk</th><th class="num">Keluar</th></tr></thead><tbody>' +
+      (detail.length ? detail.map((e) => (
+        '<tr><td>' + fmtDate(e.tanggal) + '</td>' +
+        '<td class="num qty siap">' + (e.masuk ? '+' + fmtNum(e.masuk) : '-') + '</td>' +
+        '<td class="num qty belum">' + (e.keluar ? '-' + fmtNum(e.keluar) : '-') + '</td></tr>'
+      )).join('') : '<tr><td colspan="3" style="text-align:center;color:#9AA3BE;padding:16px;">Tidak ada transaksi pada periode ini.</td></tr>') +
+    '</tbody>' +
+    (detail.length ? '<tfoot><tr class="report-total-row"><td>TOTAL</td><td class="num">+' + fmtNum(masuk) + '</td><td class="num">-' + fmtNum(keluar) + '</td></tr></tfoot>' : '') +
+    '</table>' +
+    reportCardClose(today)
+  );
+
+  const temp = document.createElement('div');
+  temp.style.position = 'fixed';
+  temp.style.left = '-9999px';
+  temp.style.top = '0';
+  temp.style.width = '480px';
+  temp.innerHTML = html;
+  document.body.appendChild(temp);
+  const cardEl = temp.querySelector('.report-card');
+  const safeName = nama.replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '');
+  try {
+    await downloadCardAsJpg(cardEl, 'Mutasi-Pallet-' + safeName + '-' + today + '.jpg', buttonEl);
+  } finally {
+    document.body.removeChild(temp);
+  }
+}
+
+// Builds the combined, newest-first activity feed shared by the dashboard's
+// "Aktivitas Terbaru" card (top 6) and the full "Log Aktivitas" overlay.
+// Sorted by the real moment each record was entered/edited (`loggedAt`);
+// older rows saved before that field existed fall back to their business
+// date at midnight so they still sort sensibly (below anything with a real
+// timestamp).
+function buildActivityFeed() {
+  return [
+    ...state.poIn.map((r) => Object.assign({}, r, { _type: 'po', _label: 'PO Masuk', _ts: r.loggedAt || (r.tanggal + 'T00:00:00') })),
+    ...state.produksi.map((r) => Object.assign({}, r, { _type: r.sumber === 'subcont' ? 'po' : 'produksi', _label: r.sumber === 'subcont' ? 'Subcont' : 'Produksi', _ts: r.loggedAt || (r.tanggal + 'T00:00:00') })),
+    ...state.keluar.map((r) => Object.assign({}, r, { _type: 'keluar', _label: 'Keluar', _ts: r.loggedAt || (r.tanggal + 'T00:00:00') })),
+  ].sort((a, b) => (a._ts < b._ts ? 1 : -1));
+}
+
+// ---------------- Full "Log Aktivitas" overlay (all history, browsable) ----------------
+// Opened from the dashboard's "Lihat semua aktivitas" link. Shows every PO
+// Masuk / Produksi / Subcont / Pallet Keluar entry ever recorded, newest
+// first, with a date filter to jump straight to a specific day's activity.
+function renderActivityLogOverlay() {
+  const all = buildActivityFeed();
+  const filterDate = state.activityLogDate;
+  const filtered = filterDate ? all.filter((r) => (r.loggedAt || r.tanggal).slice(0, 10) === filterDate) : all;
+
+  return (
+    '<div class="review-toolbar">' +
+      '<div class="review-toolbar-title">Log Aktivitas</div>' +
+      '<div class="review-toolbar-actions">' +
+        '<button type="button" id="activitylog-close" class="review-btn close">&times; Tutup</button>' +
+      '</div>' +
+    '</div>' +
+    '<div class="review-wrap">' +
+      '<div class="settings-stack">' +
+        '<div class="card">' +
+          '<div class="date-filter-row" style="margin:0;">' +
+            '<label class="field-label" for="activitylog-datefilter">Filter Tanggal Aktivitas</label>' +
+            '<div class="date-filter-controls">' +
+              '<input type="date" id="activitylog-datefilter" class="field-input mono" value="' + esc(filterDate) + '">' +
+              (filterDate ? '<button type="button" id="activitylog-datefilter-clear" class="btn-secondary date-filter-clear">Tampilkan Semua</button>' : '') +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="card">' +
+          '<div class="card-head"><div class="card-head-icon">&#128337;</div><div><div class="card-title">Semua Aktivitas</div><div class="card-subtitle">' + filtered.length + ' dari ' + all.length + ' total transaksi</div></div></div>' +
+          (filtered.length === 0 ? emptyState('Tidak ada aktivitas pada tanggal ini.') : (
+            '<div class="record-list">' + filtered.map((r) => (
+              '<div class="record-row">' +
+                '<div class="record-main">' +
+                  '<div class="record-name">' + esc(r.nama) + '</div>' +
+                  '<div class="record-meta"><span class="type-tag ' + r._type + '">' + r._label + '</span> ' + (r.loggedAt ? fmtDateTime(r.loggedAt) : fmtDate(r.tanggal) + ' (tgl input lama)') + '</div>' +
+                  (r.catatan ? '<div class="record-note">' + esc(r.catatan) + '</div>' : '') +
+                '</div>' +
+                '<div class="record-qty ' + (r._type === 'produksi' ? 'good' : r._type === 'keluar' ? 'out' : '') + '">' + fmtNum(r.qty) + '<span>pcs</span></div>' +
+              '</div>'
+            )).join('') + '</div>'
+          )) +
+        '</div>' +
+      '</div>' +
+    '</div>'
+  );
+}
+
+function bindActivityLogEvents() {
+  const closeBtn = document.getElementById('activitylog-close');
+  if (closeBtn) closeBtn.addEventListener('click', () => { state.activityLogOpen = false; render(); });
+
+  const dateFilter = document.getElementById('activitylog-datefilter');
+  if (dateFilter) dateFilter.addEventListener('change', () => { state.activityLogDate = dateFilter.value; render(); });
+  const dateFilterClear = document.getElementById('activitylog-datefilter-clear');
+  if (dateFilterClear) dateFilterClear.addEventListener('click', () => { state.activityLogDate = ''; render(); });
 }
 
 // Makes the four dashboard stat cards clickable, each opening a live-updating
@@ -2891,6 +3041,13 @@ function bindProduksiEvents() {
   const dateFilterClear = document.getElementById('produksi-datefilter-clear');
   if (dateFilterClear) dateFilterClear.addEventListener('click', () => { state.dateFilter.produksi = ''; render(); });
 
+  document.querySelectorAll('[data-sumber-filter]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.produksiSumberFilter = btn.getAttribute('data-sumber-filter');
+      render();
+    });
+  });
+
   const openReportBtn = document.getElementById('open-report-produksi');
   if (openReportBtn) openReportBtn.addEventListener('click', () => openReport('produksi'));
   const openSubcontBtn = document.getElementById('open-report-subcont');
@@ -2994,6 +3151,8 @@ function bindWhInputs() {
 function bindDashboardEvents() {
   const gotoOs = document.getElementById('goto-os');
   if (gotoOs) gotoOs.addEventListener('click', () => { state.tab = 'os'; render(); });
+  const openActivityLog = document.getElementById('open-activity-log');
+  if (openActivityLog) openActivityLog.addEventListener('click', () => { state.activityLogOpen = true; render(); });
 }
 
 // ---------------- Boot ----------------
