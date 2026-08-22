@@ -148,6 +148,17 @@ button, input { font-family: inherit; }
 }
 .settings-btn:active { background: rgba(255,255,255,0.26); }
 .settings-stack { display: flex; flex-direction: column; gap: 14px; width: 100%; max-width: 480px; }
+.settings-menu-item {
+  display: flex; align-items: center; gap: 12px; width: 100%; background: none; border: none;
+  border-bottom: 1px solid #E9EDF7; padding: 14px 8px; text-align: left; cursor: pointer; font-family: inherit;
+}
+.settings-menu-item:last-child { border-bottom: none; }
+.settings-menu-item:active { background: #F0F3FB; }
+.settings-menu-icon { font-size: 20px; flex-shrink: 0; width: 28px; text-align: center; }
+.settings-menu-text { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.settings-menu-title { font-weight: 700; font-size: 14px; color: #1E2A4A; }
+.settings-menu-sub { font-size: 11.5px; color: #7A8296; }
+.settings-menu-chevron { font-size: 20px; color: #C7D0E8; flex-shrink: 0; }
 .settings-msg { font-size: 12px; border-radius: 8px; padding: 8px 10px; margin-bottom: 12px; }
 .settings-msg.success { background: #DFF3E6; color: #2F8F5B; }
 .settings-msg.error { background: #FBE4E1; color: #C0392B; }
@@ -545,6 +556,8 @@ const state = {
   mutasiRange: { from: firstDayOfMonthISO(), to: todayISO() },
   activityLogOpen: false, // whether the full "Log Aktivitas" overlay (all history, browsable) is open
   activityLogDate: '', // yyyy-mm-dd filter on the real entry date (loggedAt), '' = show all
+  settingsSection: null, // null = show the compact settings menu list; otherwise one of
+                          // 'truck' | 'baseline' | 'team' | 'profile' | 'password' | 'pin'
   pinModal: null,
   live: false, // true once realtime subscriptions are connected
 };
@@ -969,8 +982,8 @@ function submitPin(pin) {
 }
 
 // ---------------- Settings: profile + password + PIN ----------------
-function openSettings() { state.settingsOpen = true; render(); }
-function closeSettings() { state.settingsOpen = false; render(); }
+function openSettings() { state.settingsOpen = true; state.settingsSection = null; render(); }
+function closeSettings() { state.settingsOpen = false; state.settingsSection = null; render(); }
 
 async function saveProfile(nama, bagian) {
   const { data, error } = await sb.rpc('update_profile', { p_id: state.account.id, p_nama: nama, p_bagian: bagian });
@@ -1081,16 +1094,35 @@ function computeProduksiReport(from, to) {
 
 function computeSubcontReport(from, to) {
   const filtered = state.produksi.filter((r) => r.tanggal >= from && r.tanggal <= to && r.sumber === 'subcont');
+  // Detail rows are keyed by CUSTOMER + SUPPLIER combined -- a customer that
+  // buys from two different subcont suppliers must not be merged into one
+  // row, and a supplier's own totals must add up correctly across customers.
   const map = {};
   filtered.forEach((r) => {
-    const key = r.nama;
-    if (!map[key]) map[key] = { nama: r.nama, ukuran: r.ukuran || CUSTOMER_MAP[r.nama] || '', qty: 0, subcontNama: r.subcontNama || '' };
+    const subcontNama = r.subcontNama || '(Tanpa nama subcont)';
+    const key = r.nama + '||' + subcontNama;
+    if (!map[key]) map[key] = { nama: r.nama, ukuran: r.ukuran || CUSTOMER_MAP[r.nama] || '', subcontNama, qty: 0 };
     map[key].qty += Number(r.qty) || 0;
-    if (!map[key].subcontNama && r.subcontNama) map[key].subcontNama = r.subcontNama;
   });
-  const rows = Object.values(map).sort((a, b) => b.qty - a.qty);
+  const rows = Object.values(map).sort((a, b) => {
+    const s = a.subcontNama.localeCompare(b.subcontNama);
+    return s !== 0 ? s : a.nama.localeCompare(b.nama);
+  });
+
+  // Resume per supplier: how much each subcont supplier delivered in total,
+  // and to how many distinct customers.
+  const supplierMap = {};
+  rows.forEach((r) => {
+    if (!supplierMap[r.subcontNama]) supplierMap[r.subcontNama] = { subcontNama: r.subcontNama, qty: 0, customers: new Set() };
+    supplierMap[r.subcontNama].qty += r.qty;
+    supplierMap[r.subcontNama].customers.add(r.nama);
+  });
+  const bySupplier = Object.values(supplierMap)
+    .map((s) => ({ subcontNama: s.subcontNama, qty: s.qty, jumlahCustomer: s.customers.size }))
+    .sort((a, b) => b.qty - a.qty);
+
   const totalQty = rows.reduce((s, r) => s + r.qty, 0);
-  return { rows, totalJenis: rows.length, totalQty };
+  return { rows, bySupplier, totalJenis: rows.length, totalSupplier: bySupplier.length, totalQty };
 }
 
 function computeOsReport(to) {
@@ -2196,10 +2228,20 @@ function renderSubcontReportBody() {
   const today = todayISO();
   return (
     reportCardOpen('subcont', 'Resume Pallet Subcont', 'Periode: ' + periodLabel(range.from, range.to)) +
-    '<div class="report-resume">' +
-      '<div class="report-resume-box"><div class="report-resume-value">' + fmtNum(d.totalJenis) + '</div><div class="report-resume-label">Jenis Pallet</div></div>' +
+    '<div class="report-resume report-resume-3">' +
+      '<div class="report-resume-box"><div class="report-resume-value">' + fmtNum(d.totalSupplier) + '</div><div class="report-resume-label">Jumlah Supplier</div></div>' +
+      '<div class="report-resume-box"><div class="report-resume-value">' + fmtNum(d.totalJenis) + '</div><div class="report-resume-label">Baris Customer</div></div>' +
       '<div class="report-resume-box good"><div class="report-resume-value">' + fmtNum(d.totalQty) + '</div><div class="report-resume-label">Total Pallet Subcont</div></div>' +
     '</div>' +
+    '<div class="report-note">Resume Per Supplier</div>' +
+    '<table class="report-table"><thead><tr><th>Nama Subcont / Supplier</th><th class="num">Jml Customer</th><th class="num">Total Qty</th></tr></thead><tbody>' +
+      (d.bySupplier.length ? d.bySupplier.map((s) => (
+        '<tr><td>' + esc(s.subcontNama) + '</td><td class="num qty">' + fmtNum(s.jumlahCustomer) + '</td><td class="num qty">' + fmtNum(s.qty) + '</td></tr>'
+      )).join('') : '<tr><td colspan="3" style="text-align:center;color:#9AA3BE;padding:16px;">Tidak ada pallet subcont pada periode ini.</td></tr>') +
+    '</tbody>' +
+    (d.bySupplier.length ? '<tfoot><tr class="report-total-row"><td>TOTAL</td><td class="num">-</td><td class="num">' + fmtNum(d.totalQty) + '</td></tr></tfoot>' : '') +
+    '</table>' +
+    '<div class="report-note" style="margin-top:14px;">Rincian Per Customer &amp; Supplier</div>' +
     '<table class="report-table"><thead><tr><th>Nama Customer</th><th>Ukuran</th><th>Subcont</th><th class="num">Qty</th></tr></thead><tbody>' +
       (d.rows.length ? d.rows.map((r) => (
         '<tr><td>' + esc(r.nama) + '</td><td>' + esc(r.ukuran || '-') + '</td><td>' + esc(r.subcontNama || '-') + '</td><td class="num qty">' + fmtNum(r.qty) + '</td></tr>'
@@ -2657,8 +2699,16 @@ function bindDashboardCardEvents() {
   });
 }
 
+const SETTINGS_MENU = [
+  { key: 'truck', icon: '&#128666;', title: 'Daftar Nopol Truk', sub: 'Muncul sebagai pilihan cepat di menu Keluar' },
+  { key: 'baseline', icon: '&#128203;', title: 'Atur Saldo Awal', sub: 'OS Awal & Stok Awal per customer' },
+  { key: 'team', icon: '&#128101;', title: 'Anggota Tim', sub: 'Semua orang yang terdaftar di aplikasi ini' },
+  { key: 'profile', icon: '&#128100;', title: 'Edit Profil', sub: 'Nama dan bagian akun' },
+  { key: 'password', icon: '&#128273;', title: 'Ganti Password', sub: 'Password dipakai untuk masuk ke aplikasi' },
+  { key: 'pin', icon: '&#128274;', title: 'Ganti PIN Hapus Data', sub: 'PIN dipakai untuk konfirmasi sebelum menghapus data' },
+];
+
 function renderSettingsOverlay() {
-  const s = state.account || {};
   return (
     '<div class="review-toolbar">' +
       '<div class="review-toolbar-title">Pengaturan</div>' +
@@ -2668,70 +2718,102 @@ function renderSettingsOverlay() {
     '</div>' +
     '<div class="review-wrap">' +
       '<div class="settings-stack">' +
-
-        '<div class="card">' +
-          '<div class="card-head"><div class="card-head-icon">&#128666;</div><div><div class="card-title">Daftar Nopol Truk</div><div class="card-subtitle">Muncul sebagai pilihan cepat di menu Keluar</div></div></div>' +
-          '<div id="truck-msg" class="settings-msg" style="display:none;"></div>' +
-          '<div id="truck-list">' + renderTruckChips() + '</div>' +
-          '<div class="form-grid" style="margin-top:10px;">' +
-            '<div class="field"><label class="field-label">Tambah Nopol Baru</label><input id="truck-new-input" class="field-input mono" placeholder="B 1234 XYZ"></div>' +
-            '<button type="button" id="truck-add" class="btn-primary">+ Tambah ke Daftar</button>' +
-          '</div>' +
-        '</div>' +
-
-        '<div class="card">' +
-          '<div class="card-head"><div class="card-head-icon">&#128203;</div><div><div class="card-title">Atur Saldo Awal</div><div class="card-subtitle">OS Awal &amp; Stok Awal per customer (dipakai sebagai titik awal perhitungan)</div></div></div>' +
-          '<div id="baseline-msg" class="settings-msg" style="display:none;"></div>' +
-          '<div class="form-grid">' +
-            comboMarkup('baseline-nama') +
-            '<div class="field"><label class="field-label">OS Awal (pcs kekurangan)</label><input type="number" min="0" id="baseline-os" class="field-input mono" placeholder="0"></div>' +
-            '<div class="field"><label class="field-label">Stok Awal (pcs)</label><input type="number" min="0" id="baseline-stok" class="field-input mono" placeholder="0"></div>' +
-            '<button type="button" id="baseline-save" class="btn-primary">&#10003; Simpan Saldo Awal</button>' +
-          '</div>' +
-        '</div>' +
-
-        '<div class="card">' +
-          '<div class="card-head"><div class="card-head-icon">&#128101;</div><div><div class="card-title">Anggota Tim</div><div class="card-subtitle">Semua orang yang terdaftar di aplikasi ini</div></div></div>' +
-          '<div id="team-members-list"><div class="empty-state" style="padding:20px;">&#8635; Memuat daftar anggota...</div></div>' +
-        '</div>' +
-
-        '<div class="card">' +
-          '<div class="card-head"><div class="card-head-icon">&#128100;</div><div><div class="card-title">Edit Profil</div><div class="card-subtitle">Nama dan bagian akun</div></div></div>' +
-          '<div id="profile-msg" class="settings-msg" style="display:none;"></div>' +
-          '<div class="form-grid">' +
-            '<div class="field"><label class="field-label">Nama</label><input id="settings-nama" class="field-input" value="' + esc(s.nama || '') + '"></div>' +
-            '<div class="field"><label class="field-label">Bagian</label><input id="settings-bagian" class="field-input" value="' + esc(s.bagian || '') + '"></div>' +
-            '<button type="button" id="profile-save" class="btn-primary">&#10003; Simpan Profil</button>' +
-          '</div>' +
-        '</div>' +
-
-        '<div class="card">' +
-          '<div class="card-head"><div class="card-head-icon">&#128273;</div><div><div class="card-title">Ganti Password</div><div class="card-subtitle">Password dipakai untuk masuk ke aplikasi</div></div></div>' +
-          '<div id="password-msg" class="settings-msg" style="display:none;"></div>' +
-          '<div class="form-grid">' +
-            '<div class="field"><label class="field-label">Password Lama</label><input id="settings-pw-old" type="password" class="field-input" autocomplete="current-password"></div>' +
-            '<div class="field"><label class="field-label">Password Baru</label><input id="settings-pw-new" type="password" class="field-input" placeholder="Minimal 4 karakter" autocomplete="new-password"></div>' +
-            '<div class="field"><label class="field-label">Konfirmasi Password Baru</label><input id="settings-pw-confirm" type="password" class="field-input" autocomplete="new-password"></div>' +
-            '<button type="button" id="password-save" class="btn-primary">&#10003; Simpan Password Baru</button>' +
-          '</div>' +
-        '</div>' +
-
-        '<div class="card">' +
-          '<div class="card-head"><div class="card-head-icon">&#128274;</div><div><div class="card-title">Ganti PIN Hapus Data</div><div class="card-subtitle">PIN dipakai untuk konfirmasi sebelum menghapus data</div></div></div>' +
-          '<div id="pin-change-msg" class="settings-msg" style="display:none;"></div>' +
-          '<div class="form-grid">' +
-            '<div class="field"><label class="field-label">PIN Lama</label><input id="settings-pin-old" type="password" inputmode="numeric" maxlength="6" class="field-input mono" placeholder="&bull;&bull;&bull;&bull;"></div>' +
-            '<div class="field"><label class="field-label">PIN Baru (4-6 digit)</label><input id="settings-pin-new" type="password" inputmode="numeric" maxlength="6" class="field-input mono" placeholder="&bull;&bull;&bull;&bull;"></div>' +
-            '<div class="field"><label class="field-label">Konfirmasi PIN Baru</label><input id="settings-pin-confirm" type="password" inputmode="numeric" maxlength="6" class="field-input mono" placeholder="&bull;&bull;&bull;&bull;"></div>' +
-            '<button type="button" id="pin-save" class="btn-primary">&#10003; Simpan PIN Baru</button>' +
-          '</div>' +
-        '</div>' +
-
-        '<button type="button" id="settings-logout" class="btn-review" style="background:#C0392B;">&#8630; Keluar dari Akun</button>' +
-
+        (state.settingsSection ? renderSettingsSection(state.settingsSection) : renderSettingsMenuList()) +
       '</div>' +
     '</div>'
   );
+}
+
+// Compact top-level view: just a tappable list of settings areas, so the
+// overlay stays short and easy to scan instead of six fully-expanded forms
+// stacked on top of each other.
+function renderSettingsMenuList() {
+  return (
+    '<div class="card" style="padding:6px;">' +
+      SETTINGS_MENU.map((m) => (
+        '<button type="button" class="settings-menu-item" data-settings-section="' + m.key + '">' +
+          '<span class="settings-menu-icon">' + m.icon + '</span>' +
+          '<span class="settings-menu-text"><span class="settings-menu-title">' + esc(m.title) + '</span><span class="settings-menu-sub">' + esc(m.sub) + '</span></span>' +
+          '<span class="settings-menu-chevron">&#8250;</span>' +
+        '</button>'
+      )).join('') +
+    '</div>' +
+    '<button type="button" id="settings-logout" class="btn-review" style="background:#C0392B;">&#8630; Keluar dari Akun</button>'
+  );
+}
+
+// Detail view for one settings section, reached by tapping a row in the menu
+// list above. Each returns a "&larr; Kembali" link plus that section's card
+// (same form content as before, just shown one at a time now).
+function renderSettingsSection(key) {
+  const back = '<button type="button" id="settings-back" class="btn-link" style="margin:0 0 10px 2px;">&larr; Kembali ke Pengaturan</button>';
+  const sections = {
+    truck: (
+      '<div class="card">' +
+        '<div class="card-head"><div class="card-head-icon">&#128666;</div><div><div class="card-title">Daftar Nopol Truk</div><div class="card-subtitle">Muncul sebagai pilihan cepat di menu Keluar</div></div></div>' +
+        '<div id="truck-msg" class="settings-msg" style="display:none;"></div>' +
+        '<div id="truck-list">' + renderTruckChips() + '</div>' +
+        '<div class="form-grid" style="margin-top:10px;">' +
+          '<div class="field"><label class="field-label">Tambah Nopol Baru</label><input id="truck-new-input" class="field-input mono" placeholder="B 1234 XYZ"></div>' +
+          '<button type="button" id="truck-add" class="btn-primary">+ Tambah ke Daftar</button>' +
+        '</div>' +
+      '</div>'
+    ),
+    baseline: (
+      '<div class="card">' +
+        '<div class="card-head"><div class="card-head-icon">&#128203;</div><div><div class="card-title">Atur Saldo Awal</div><div class="card-subtitle">OS Awal &amp; Stok Awal per customer (dipakai sebagai titik awal perhitungan)</div></div></div>' +
+        '<div id="baseline-msg" class="settings-msg" style="display:none;"></div>' +
+        '<div class="form-grid">' +
+          comboMarkup('baseline-nama') +
+          '<div class="field"><label class="field-label">OS Awal (pcs kekurangan)</label><input type="number" min="0" id="baseline-os" class="field-input mono" placeholder="0"></div>' +
+          '<div class="field"><label class="field-label">Stok Awal (pcs)</label><input type="number" min="0" id="baseline-stok" class="field-input mono" placeholder="0"></div>' +
+          '<button type="button" id="baseline-save" class="btn-primary">&#10003; Simpan Saldo Awal</button>' +
+        '</div>' +
+      '</div>'
+    ),
+    team: (
+      '<div class="card">' +
+        '<div class="card-head"><div class="card-head-icon">&#128101;</div><div><div class="card-title">Anggota Tim</div><div class="card-subtitle">Semua orang yang terdaftar di aplikasi ini</div></div></div>' +
+        '<div id="team-members-list"><div class="empty-state" style="padding:20px;">&#8635; Memuat daftar anggota...</div></div>' +
+      '</div>'
+    ),
+    profile: (
+      '<div class="card">' +
+        '<div class="card-head"><div class="card-head-icon">&#128100;</div><div><div class="card-title">Edit Profil</div><div class="card-subtitle">Nama dan bagian akun</div></div></div>' +
+        '<div id="profile-msg" class="settings-msg" style="display:none;"></div>' +
+        '<div class="form-grid">' +
+          '<div class="field"><label class="field-label">Nama</label><input id="settings-nama" class="field-input" value="' + esc((state.account || {}).nama || '') + '"></div>' +
+          '<div class="field"><label class="field-label">Bagian</label><input id="settings-bagian" class="field-input" value="' + esc((state.account || {}).bagian || '') + '"></div>' +
+          '<button type="button" id="profile-save" class="btn-primary">&#10003; Simpan Profil</button>' +
+        '</div>' +
+      '</div>'
+    ),
+    password: (
+      '<div class="card">' +
+        '<div class="card-head"><div class="card-head-icon">&#128273;</div><div><div class="card-title">Ganti Password</div><div class="card-subtitle">Password dipakai untuk masuk ke aplikasi</div></div></div>' +
+        '<div id="password-msg" class="settings-msg" style="display:none;"></div>' +
+        '<div class="form-grid">' +
+          '<div class="field"><label class="field-label">Password Lama</label><input id="settings-pw-old" type="password" class="field-input" autocomplete="current-password"></div>' +
+          '<div class="field"><label class="field-label">Password Baru</label><input id="settings-pw-new" type="password" class="field-input" placeholder="Minimal 4 karakter" autocomplete="new-password"></div>' +
+          '<div class="field"><label class="field-label">Konfirmasi Password Baru</label><input id="settings-pw-confirm" type="password" class="field-input" autocomplete="new-password"></div>' +
+          '<button type="button" id="password-save" class="btn-primary">&#10003; Simpan Password Baru</button>' +
+        '</div>' +
+      '</div>'
+    ),
+    pin: (
+      '<div class="card">' +
+        '<div class="card-head"><div class="card-head-icon">&#128274;</div><div><div class="card-title">Ganti PIN Hapus Data</div><div class="card-subtitle">PIN dipakai untuk konfirmasi sebelum menghapus data</div></div></div>' +
+        '<div id="pin-change-msg" class="settings-msg" style="display:none;"></div>' +
+        '<div class="form-grid">' +
+          '<div class="field"><label class="field-label">PIN Lama</label><input id="settings-pin-old" type="password" inputmode="numeric" maxlength="6" class="field-input mono" placeholder="&bull;&bull;&bull;&bull;"></div>' +
+          '<div class="field"><label class="field-label">PIN Baru (4-6 digit)</label><input id="settings-pin-new" type="password" inputmode="numeric" maxlength="6" class="field-input mono" placeholder="&bull;&bull;&bull;&bull;"></div>' +
+          '<div class="field"><label class="field-label">Konfirmasi PIN Baru</label><input id="settings-pin-confirm" type="password" inputmode="numeric" maxlength="6" class="field-input mono" placeholder="&bull;&bull;&bull;&bull;"></div>' +
+          '<button type="button" id="pin-save" class="btn-primary">&#10003; Simpan PIN Baru</button>' +
+        '</div>' +
+      '</div>'
+    ),
+  };
+  return back + (sections[key] || '');
 }
 
 function showSettingsMsg(elId, text, isError) {
@@ -2769,6 +2851,15 @@ async function loadTeamMembers() {
 function bindSettingsEvents() {
   const closeBtn = document.getElementById('settings-close');
   if (closeBtn) closeBtn.addEventListener('click', closeSettings);
+
+  document.querySelectorAll('[data-settings-section]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.settingsSection = btn.getAttribute('data-settings-section');
+      render();
+    });
+  });
+  const backBtn = document.getElementById('settings-back');
+  if (backBtn) backBtn.addEventListener('click', () => { state.settingsSection = null; render(); });
 
   loadTeamMembers();
   bindBaselineForm();
@@ -2868,6 +2959,9 @@ function bindTruckList() {
 }
 
 function bindBaselineForm() {
+  const namaInputCheck = document.getElementById('baseline-nama-input');
+  if (!namaInputCheck) return; // baseline section isn't the one currently shown
+
   bindCombobox('baseline-nama');
 
   const namaInput = document.getElementById('baseline-nama-input');
