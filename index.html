@@ -1098,12 +1098,16 @@ function computeOsReport(to) {
     const osAwalKey = Object.keys(OS_AWAL).find((k) => normKey(k) === key);
     const osAwal = osAwalKey ? OS_AWAL[osAwalKey] : 0;
     return Object.assign({}, it, { osAwal, os: osAwal + it.po - it.produksi - it.subcont });
-  }).filter((r) => r.os !== 0).sort((a, b) => b.os - a.os);
+  })
+    // Resume OS Produksi only lists customers still owed production (os > 0).
+    // Customers already fully covered (os === 0) or over-produced (os < 0)
+    // are considered settled and are left out of this resume.
+    .filter((r) => r.os > 0)
+    .sort((a, b) => b.os - a.os);
   const totalPo = rows.reduce((s, r) => s + r.osAwal + r.po, 0);
   const totalProduksiSubcont = rows.reduce((s, r) => s + r.produksi + r.subcont, 0);
-  const totalKurang = rows.filter((r) => r.os > 0).reduce((s, r) => s + r.os, 0);
-  const totalLebih = rows.filter((r) => r.os < 0).reduce((s, r) => s + Math.abs(r.os), 0);
-  return { rows, totalPo, totalProduksiSubcont, totalKurang, totalLebih, itemKurang: rows.filter((r) => r.os > 0).length };
+  const totalKurang = rows.reduce((s, r) => s + r.os, 0);
+  return { rows, totalPo, totalProduksiSubcont, totalKurang, itemKurang: rows.length };
 }
 
 function computeKeluarReport(from, to) {
@@ -2125,7 +2129,7 @@ function renderOsReportBody() {
         '<tr><td>' + esc(r.nama) + '</td><td>' + esc(r.ukuran || '-') + '</td><td class="num qty">' + fmtNum(r.osAwal + r.po) + '</td>' +
         '<td class="num qty">' + fmtNum(r.produksi) + '</td><td class="num qty">' + fmtNum(r.subcont) + '</td>' +
         '<td class="num qty ' + (r.os > 0 ? 'belum' : 'siap') + '">' + (r.os > 0 ? '-' : '+') + fmtNum(Math.abs(r.os)) + '</td></tr>'
-      )).join('') : '<tr><td colspan="6" style="text-align:center;color:#9AA3BE;padding:16px;">Tidak ada selisih OS.</td></tr>') +
+      )).join('') : '<tr><td colspan="6" style="text-align:center;color:#9AA3BE;padding:16px;">Semua customer sudah lunas produksinya.</td></tr>') +
     '</tbody></table>' +
     reportCardClose(today)
   );
