@@ -170,6 +170,9 @@ button, input { font-family: inherit; }
 }
 
 .tab-body { padding: 16px 14px 8px; display: flex; flex-direction: column; gap: 16px; flex: 1; }
+.dashboard-greeting { padding: 2px 2px 0; }
+.dashboard-greeting-main { font-family: 'Bitter', serif; font-weight: 800; font-size: 21px; color: #1E2A4A; line-height: 1.25; }
+.dashboard-greeting-sub { font-size: 12.5px; color: #7A8296; margin-top: 2px; }
 .card { background: #FFFFFF; border: 1px solid #DCE2F0; border-radius: 14px; padding: 16px; box-shadow: 0 1px 2px rgba(30,42,74,0.05); }
 .card-head { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 14px; }
 .card-head-icon { width: 34px; height: 34px; border-radius: 9px; background: #E7ECF8; color: #344DA1; display: flex; align-items: center; justify-content: center; flex-shrink: 0; font-size: 17px; }
@@ -289,6 +292,9 @@ button, input { font-family: inherit; }
 .stat-pill { font-size: 11.5px; font-weight: 600; padding: 6px 10px; border-radius: 999px; background: #E7ECF8; color: #344DA1; }
 .stat-pill.danger { background: #FBE4E1; color: #C0392B; }
 .stat-pill.good { background: #DFF3E6; color: #2F8F5B; }
+.stat-pill-clickable { border: 1.5px solid transparent; cursor: pointer; font-family: inherit; }
+.stat-pill-clickable:active { filter: brightness(0.95); }
+.stat-pill-clickable.active { border-color: currentColor; box-shadow: 0 0 0 1px currentColor inset; }
 .gauge-track { height: 6px; border-radius: 4px; background: #E7ECF8; margin-top: 7px; overflow: hidden; }
 .gauge-fill { height: 100%; border-radius: 4px; }
 .gauge-fill.good { background: #2F8F5B; }
@@ -549,6 +555,7 @@ const state = {
   editing: { poin: null, produksi: null, keluar: null },
   dateFilter: { poin: '', produksi: '', keluar: '' }, // yyyy-mm-dd or '' = show all, used to narrow the history list for editing
   produksiSumberFilter: 'semua', // 'semua' | 'sendiri' | 'subcont' -- filters the Riwayat Produksi list only
+  osFilter: 'semua', // 'semua' | 'kurang' | 'lebih' -- filters the OS tab list via the two stat pills
   stokHabisOpen: false, // whether the "stok habis" section on the Stok tab is expanded
   poBelumOpen: false, // whether the "PO Belum Produksi" dashboard detail overlay is open
   mutasiOpen: false, // whether the live "Cek Mutasi Pallet per Customer" search overlay is open
@@ -1930,6 +1937,8 @@ function renderOsTab() {
   const rows = agg.filter((r) => r.os !== 0).sort((a, b) => b.os - a.os);
   const kurang = rows.filter((r) => r.os > 0);
   const lebih = rows.filter((r) => r.os < 0);
+  const filter = state.osFilter;
+  const shown = filter === 'kurang' ? kurang : filter === 'lebih' ? lebih : rows;
   return (
     '<div class="tab-body">' +
       '<div class="card">' +
@@ -1939,12 +1948,13 @@ function renderOsTab() {
         '</div>' +
         '<div class="search-wrap"><input id="os-search" class="field-input" placeholder="Cari nama customer..."></div>' +
         '<div class="stat-strip">' +
-          '<div class="stat-pill danger">' + kurang.length + ' item kurang produksi</div>' +
-          '<div class="stat-pill good">' + lebih.length + ' item lebih produksi</div>' +
+          '<button type="button" class="stat-pill danger stat-pill-clickable' + (filter === 'kurang' ? ' active' : '') + '" data-os-filter="kurang">' + kurang.length + ' item kurang produksi</button>' +
+          '<button type="button" class="stat-pill good stat-pill-clickable' + (filter === 'lebih' ? ' active' : '') + '" data-os-filter="lebih">' + lebih.length + ' item lebih produksi</button>' +
+          (filter !== 'semua' ? '<button type="button" class="stat-pill stat-pill-clickable" data-os-filter="semua">Tampilkan Semua</button>' : '') +
         '</div>' +
         '<button type="button" id="open-report-os" class="btn-review">&#128196; Lihat &amp; Unduh Resume OS (JPG)</button>' +
       '</div>' +
-      '<div id="os-list">' + renderOsList(rows, '') + '</div>' +
+      '<div id="os-list">' + renderOsList(shown, '') + '</div>' +
     '</div>'
   );
 }
@@ -2096,6 +2106,10 @@ function renderDashboardTab() {
 
   return (
     '<div class="tab-body">' +
+      '<div class="dashboard-greeting">' +
+        '<div class="dashboard-greeting-main">' + greetingLabel() + (state.account && state.account.nama ? ', ' + esc(state.account.nama) : '') + '</div>' +
+        '<div class="dashboard-greeting-sub">Hari ini ' + fullDateLabelToday() + '</div>' +
+      '</div>' +
       '<div class="stat-grid">' +
         statCard('stok', 'Stok Palet', fmtNum(totalStok), 'pcs', 'good', '&#128200;', fmtNum(totalBelumWH) + ' pcs belum siap kirim WH') +
         statCard('os', 'OS Produksi', fmtNum(totalOs), 'pcs', 'danger', '&#9888;', 'belum diproduksi') +
@@ -2396,6 +2410,21 @@ function bindReportOverlayEvents(type) {
 }
 
 const BULAN_ID = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
+const HARI_ID = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+
+// "Selamat Pagi/Siang/Sore/Malam" based on the device's current local time.
+function greetingLabel() {
+  const h = new Date().getHours();
+  if (h < 10) return 'Selamat Pagi';
+  if (h < 15) return 'Selamat Siang';
+  if (h < 18) return 'Selamat Sore';
+  return 'Selamat Malam';
+}
+// "Minggu, 23 Agustus 2026" in Indonesian, for today's date.
+function fullDateLabelToday() {
+  const d = new Date();
+  return HARI_ID[d.getDay()] + ', ' + d.getDate() + ' ' + BULAN_ID[d.getMonth()] + ' ' + d.getFullYear();
+}
 
 function fmtDateLong(iso) {
   const d = new Date(iso + 'T00:00:00');
@@ -3268,9 +3297,19 @@ function bindKeluarEvents() {
 function bindOsEvents() {
   const agg = computeAggregates();
   const rows = agg.filter((r) => r.os !== 0).sort((a, b) => b.os - a.os);
+  const shown = state.osFilter === 'kurang' ? rows.filter((r) => r.os > 0)
+    : state.osFilter === 'lebih' ? rows.filter((r) => r.os < 0)
+    : rows;
   const search = document.getElementById('os-search');
   search.addEventListener('input', () => {
-    document.getElementById('os-list').innerHTML = renderOsList(rows, search.value);
+    document.getElementById('os-list').innerHTML = renderOsList(shown, search.value);
+  });
+  document.querySelectorAll('[data-os-filter]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const key = btn.getAttribute('data-os-filter');
+      state.osFilter = state.osFilter === key ? 'semua' : key;
+      render();
+    });
   });
   const openReportBtn = document.getElementById('open-report-os');
   if (openReportBtn) openReportBtn.addEventListener('click', () => openReport('os'));
@@ -3325,6 +3364,17 @@ function bindDashboardEvents() {
 
 // ---------------- Boot ----------------
 initAccounts();
+
+// Keeps the dashboard's "Selamat Pagi/Siang/Sore/Malam" greeting and today's
+// date genuinely real-time -- re-renders the dashboard once a minute (only
+// when it's actually the visible tab) purely so the greeting/date can update
+// even if nothing else changes, e.g. the app stays open across a time-of-day
+// boundary or past midnight.
+setInterval(() => {
+  if (state.tab === 'dashboard' && !state.settingsOpen && !state.reviewOpen && !state.mutasiOpen && !state.activityLogOpen && !state.poBelumOpen) {
+    render();
+  }
+}, 60000);
 </script>
 </body>
 </html>
