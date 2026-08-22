@@ -380,13 +380,18 @@ button, input { font-family: inherit; }
 .report-head-company { font-family: 'Bitter', serif; font-weight: 800; font-size: 16px; color: #1E2A4A; }
 .report-head-doc { font-size: 12px; color: #E36928; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; margin-top: 1px; }
 .report-meta { font-size: 11.5px; color: #7A8296; margin-bottom: 14px; }
-.report-table { width: 100%; border-collapse: collapse; }
+.report-table { width: 100%; border-collapse: collapse; table-layout: auto; }
 .report-table th {
-  background: #344DA1; color: #FFFFFF; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.03em;
-  padding: 8px 8px; text-align: left;
+  background: #344DA1; color: #FFFFFF; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.02em;
+  padding: 6px 5px; text-align: left; white-space: nowrap;
 }
 .report-table th.num, .report-table td.num { text-align: right; }
-.report-table td { font-size: 12.5px; padding: 7px 8px; border-bottom: 1px solid #E9EDF7; color: #1E2A4A; }
+/* Keep every cell on a single line -- long customer names must stay 1 row so
+   tables with many customers don't balloon in height (2-line wraps roughly
+   double a row's height, which stacks up badly on long reports). The name
+   column (first, no fixed width) naturally absorbs the remaining table width
+   since every other column below is compact/numeric and sized to content. */
+.report-table td { font-size: 10.5px; padding: 5px 5px; border-bottom: 1px solid #E9EDF7; color: #1E2A4A; white-space: nowrap; }
 .report-table tr:nth-child(even) td { background: #F7F8FC; }
 .report-table td.qty { font-family: 'JetBrains Mono', monospace; font-weight: 700; }
 .report-table td.qty.siap { color: #2F8F5B; }
@@ -2203,7 +2208,7 @@ function renderOsReportBody() {
       '<div class="report-resume-box good"><div class="report-resume-value">' + fmtNum(d.totalProduksiSubcont) + '</div><div class="report-resume-label">Total Produksi + Subcont</div></div>' +
       '<div class="report-resume-box warn"><div class="report-resume-value">' + fmtNum(d.totalKurang) + '</div><div class="report-resume-label">Total Kekurangan (' + d.itemKurang + ' item)</div></div>' +
     '</div>' +
-    '<table class="report-table"><thead><tr><th>Nama Customer</th><th>Ukuran</th><th class="num">PO</th><th class="num">Produksi</th><th class="num">Subcont</th><th class="num">OS</th></tr></thead><tbody>' +
+    '<table class="report-table"><thead><tr><th>Nama Customer</th><th>Ukuran</th><th class="num">PO</th><th class="num">Prod.</th><th class="num">Subc.</th><th class="num">OS</th></tr></thead><tbody>' +
       (d.rows.length ? d.rows.map((r) => (
         '<tr><td>' + esc(r.nama) + '</td><td>' + esc(r.ukuran || '-') + '</td><td class="num qty">' + fmtNum(r.osAwal + r.po) + '</td>' +
         '<td class="num qty">' + fmtNum(r.produksi) + '</td><td class="num qty">' + fmtNum(r.subcont) + '</td>' +
@@ -2227,7 +2232,7 @@ function renderKeluarReportBody() {
       '<div class="report-resume-box warn"><div class="report-resume-value">' + fmtNum(d.totalKeluar) + '</div><div class="report-resume-label">Keluar</div></div>' +
     '</div>' +
     '<div class="report-note">Sisa stok akhir periode: ' + fmtNum(d.totalSisa) + ' pcs</div>' +
-    '<table class="report-table"><thead><tr><th>Nama Customer</th><th>Ukuran</th><th class="num">Stok Awal</th><th class="num">Masuk</th><th class="num">Keluar</th><th class="num">Sisa Stok</th></tr></thead><tbody>' +
+    '<table class="report-table"><thead><tr><th>Nama Customer</th><th>Ukuran</th><th class="num">Awal</th><th class="num">Masuk</th><th class="num">Keluar</th><th class="num">Sisa</th></tr></thead><tbody>' +
       (d.rows.length ? d.rows.map((r) => (
         '<tr><td>' + esc(r.nama) + '</td><td>' + esc(r.ukuran || '-') + '</td>' +
         '<td class="num qty">' + fmtNum(r.stokAwal) + '</td>' +
