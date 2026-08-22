@@ -528,6 +528,9 @@ const state = {
   dateFilter: { poin: '', produksi: '', keluar: '' }, // yyyy-mm-dd or '' = show all, used to narrow the history list for editing
   stokHabisOpen: false, // whether the "stok habis" section on the Stok tab is expanded
   poBelumOpen: false, // whether the "PO Belum Produksi" dashboard detail overlay is open
+  mutasiOpen: false, // whether the live "Cek Mutasi Pallet per Customer" search overlay is open
+  mutasiSearch: '',
+  mutasiRange: { from: firstDayOfMonthISO(), to: todayISO() },
   pinModal: null,
   live: false, // true once realtime subscriptions are connected
 };
@@ -1123,6 +1126,79 @@ function computeKeluarReport(from, to) {
   return { rows, totalMasuk, totalKeluar, selisih: totalMasuk - totalKeluar };
 }
 
+// Per-customer mutation summary for a date range: Stok Awal (balance carried
+// in from before `from`), Masuk (own production within the range -- subcont
+// never enters WS stock, same rule as computeAggregates), Keluar (pallets
+// shipped out within the range), and Sisa Stok (the resulting balance). This
+// mirrors the "MUTASI PALET WS" resume layout (one row per customer) rather
+// than a flat chronological transaction list.
+function computeMutasiReport(from, to) {
+  const map = {};
+  const touch = (nama, ukuran) => {
+    const key = normKey(nama);
+    if (!key) return null;
+    if (!map[key]) map[key] = { nama, ukuran: ukuran || CUSTOMER_MAP[nama] || '', masukBefore: 0, keluarBefore: 0, masuk: 0, keluar: 0 };
+    else if (ukuran && !map[key].ukuran) map[key].ukuran = ukuran;
+    return key;
+  };
+  Object.keys(STOK_AWAL).forEach((nama) => touch(nama, ''));
+  state.produksi.forEach((r) => {
+    if (r.sumber === 'subcont') return;
+    const k = touch(r.nama, r.ukuran);
+    if (!k) return;
+    const qty = Number(r.qty) || 0;
+    if (r.tanggal < from) map[k].masukBefore += qty;
+    else if (r.tanggal <= to) map[k].masuk += qty;
+  });
+  state.keluar.forEach((r) => {
+    const k = touch(r.nama, r.ukuran);
+    if (!k) return;
+    const qty = Number(r.qty) || 0;
+    if (r.tanggal < from) map[k].keluarBefore += qty;
+    else if (r.tanggal <= to) map[k].keluar += qty;
+  });
+  const rows = Object.values(map).map((it) => {
+    const key = normKey(it.nama);
+    const stokAwalKey = Object.keys(STOK_AWAL).find((k) => normKey(k) === key);
+    const stokAwalBaseline = stokAwalKey ? STOK_AWAL[stokAwalKey] : 0;
+    const stokAwal = stokAwalBaseline + it.masukBefore - it.keluarBefore;
+    const sisaStok = stokAwal + it.masuk - it.keluar;
+    return { nama: it.nama, ukuran: it.ukuran, stokAwal, masuk: it.masuk, keluar: it.keluar, sisaStok };
+  })
+    .filter((r) => r.stokAwal !== 0 || r.masuk !== 0 || r.keluar !== 0 || r.sisaStok !== 0)
+    .sort((a, b) => a.nama.localeCompare(b.nama));
+  return {
+    rows,
+    totalStokAwal: rows.reduce((s, r) => s + r.stokAwal, 0),
+    totalMasuk: rows.reduce((s, r) => s + r.masuk, 0),
+    totalKeluar: rows.reduce((s, r) => s + r.keluar, 0),
+    totalSisa: rows.reduce((s, r) => s + r.sisaStok, 0),
+  };
+}
+
+// Day-by-day masuk/keluar entries for a single customer within a date range
+// (only dates that actually have a movement, merged if both happen same
+// day). Used by the live "Cek Mutasi Pallet" search overlay.
+function computeMutasiDetail(nama, from, to) {
+  const key = normKey(nama);
+  const byDate = {};
+  const add = (tanggal, masuk, keluar) => {
+    if (!byDate[tanggal]) byDate[tanggal] = { tanggal, masuk: 0, keluar: 0 };
+    byDate[tanggal].masuk += masuk;
+    byDate[tanggal].keluar += keluar;
+  };
+  state.produksi.forEach((r) => {
+    if (r.sumber === 'subcont') return;
+    if (normKey(r.nama) !== key || r.tanggal < from || r.tanggal > to) return;
+    add(r.tanggal, Number(r.qty) || 0, 0);
+  });
+  state.keluar.forEach((r) => {
+    if (normKey(r.nama) !== key || r.tanggal < from || r.tanggal > to) return;
+    add(r.tanggal, 0, Number(r.qty) || 0);
+  });
+  return Object.values(byDate).sort((a, b) => (a.tanggal < b.tanggal ? -1 : 1));
+}
+
 // ---------------- Download report card as JPG (with gallery-save support) ----------------
 async function downloadCardAsJpg(cardEl, filename, buttonEl) {
   if (!cardEl || typeof html2canvas === 'undefined') return;
@@ -1331,6 +1407,7 @@ function renderShell() {
       '<div id="report-overlay-keluar" class="review-overlay ' + (state.reportOpen.keluar ? 'open' : '') + '">' + (state.reportOpen.keluar ? renderReportOverlay('keluar') : '') + '</div>' +
       '<div id="report-overlay-subcont" class="review-overlay ' + (state.reportOpen.subcont ? 'open' : '') + '">' + (state.reportOpen.subcont ? renderReportOverlay('subcont') : '') + '</div>' +
       '<div id="pobelum-overlay" class="review-overlay ' + (state.poBelumOpen ? 'open' : '') + '">' + (state.poBelumOpen ? renderPoBelumOverlay() : '') + '</div>' +
+      '<div id="mutasi-overlay" class="review-overlay ' + (state.mutasiOpen ? 'open' : '') + '">' + (state.mutasiOpen ? renderMutasiOverlay() : '') + '</div>' +
       (state.pinModal ? renderPinModal() : '') +
     '</div>'
   );
@@ -1376,6 +1453,7 @@ function bindShellEvents() {
   bindSettingsEvents();
   ['poin', 'produksi', 'os', 'keluar', 'subcont'].forEach(bindReportOverlayEvents);
   bindPoBelumEvents();
+  bindMutasiEvents();
   bindDashboardCardEvents();
 }
 
@@ -1702,6 +1780,7 @@ function renderKeluarTab() {
       '<div class="list-title">Riwayat Pallet Keluar (' + state.keluar.length + ')</div>' +
       dateFilterMarkup('keluar', state.dateFilter.keluar) +
       '<button type="button" id="open-report-keluar" class="btn-review">&#128196; Lihat &amp; Unduh Laporan Mutasi (JPG)</button>' +
+      '<button type="button" id="open-mutasi-live" class="btn-review" style="background:#4A5578;margin-top:8px;">&#128269; Cek Mutasi Pallet per Customer</button>' +
       '<div id="keluar-list">' + renderKeluarList(filterByDate(state.keluar, state.dateFilter.keluar)) + '</div>' +
     '</div>'
   );
@@ -2138,22 +2217,27 @@ function renderOsReportBody() {
 // ---------------- Keluar / mutasi report ----------------
 function renderKeluarReportBody() {
   const range = state.reportRange.keluar;
-  const d = computeKeluarReport(range.from, range.to);
+  const d = computeMutasiReport(range.from, range.to);
   const today = todayISO();
   return (
     reportCardOpen('keluar', 'Laporan Mutasi Pallet', 'Periode: ' + periodLabel(range.from, range.to)) +
-    '<div class="report-resume">' +
-      '<div class="report-resume-box good"><div class="report-resume-value">' + fmtNum(d.totalMasuk) + '</div><div class="report-resume-label">Masuk (Produksi)</div></div>' +
-      '<div class="report-resume-box warn"><div class="report-resume-value">' + fmtNum(d.totalKeluar) + '</div><div class="report-resume-label">Keluar (Kirim WH)</div></div>' +
+    '<div class="report-resume report-resume-3">' +
+      '<div class="report-resume-box"><div class="report-resume-value">' + fmtNum(d.totalStokAwal) + '</div><div class="report-resume-label">Stok Awal</div></div>' +
+      '<div class="report-resume-box good"><div class="report-resume-value">' + fmtNum(d.totalMasuk) + '</div><div class="report-resume-label">Masuk</div></div>' +
+      '<div class="report-resume-box warn"><div class="report-resume-value">' + fmtNum(d.totalKeluar) + '</div><div class="report-resume-label">Keluar</div></div>' +
     '</div>' +
-    '<div class="report-note">Selisih mutasi: ' + (d.selisih >= 0 ? '+' : '') + fmtNum(d.selisih) + ' pcs</div>' +
-    '<table class="report-table"><thead><tr><th>Tanggal</th><th>Nama Customer</th><th>Jenis</th><th class="num">Qty</th></tr></thead><tbody>' +
+    '<div class="report-note">Sisa stok akhir periode: ' + fmtNum(d.totalSisa) + ' pcs</div>' +
+    '<table class="report-table"><thead><tr><th>Nama Customer</th><th>Ukuran</th><th class="num">Stok Awal</th><th class="num">Masuk</th><th class="num">Keluar</th><th class="num">Sisa Stok</th></tr></thead><tbody>' +
       (d.rows.length ? d.rows.map((r) => (
-        '<tr><td>' + fmtDate(r.tanggal) + '</td><td>' + esc(r.nama) + '</td>' +
-        '<td><span class="type-tag ' + (r._jenis === 'masuk' ? 'produksi' : 'keluar') + '">' + (r._jenis === 'masuk' ? 'Masuk' : 'Keluar') + '</span></td>' +
-        '<td class="num qty ' + (r._jenis === 'masuk' ? 'siap' : 'belum') + '">' + (r._jenis === 'masuk' ? '+' : '-') + fmtNum(r.qty) + '</td></tr>'
-      )).join('') : '<tr><td colspan="4" style="text-align:center;color:#9AA3BE;padding:16px;">Tidak ada mutasi pada periode ini.</td></tr>') +
-    '</tbody></table>' +
+        '<tr><td>' + esc(r.nama) + '</td><td>' + esc(r.ukuran || '-') + '</td>' +
+        '<td class="num qty">' + fmtNum(r.stokAwal) + '</td>' +
+        '<td class="num qty siap">+' + fmtNum(r.masuk) + '</td>' +
+        '<td class="num qty belum">-' + fmtNum(r.keluar) + '</td>' +
+        '<td class="num qty">' + fmtNum(r.sisaStok) + '</td></tr>'
+      )).join('') : '<tr><td colspan="6" style="text-align:center;color:#9AA3BE;padding:16px;">Tidak ada mutasi pada periode ini.</td></tr>') +
+    '</tbody>' +
+    (d.rows.length ? '<tfoot><tr class="report-total-row"><td colspan="2">TOTAL</td><td class="num">' + fmtNum(d.totalStokAwal) + '</td><td class="num">+' + fmtNum(d.totalMasuk) + '</td><td class="num">-' + fmtNum(d.totalKeluar) + '</td><td class="num">' + fmtNum(d.totalSisa) + '</td></tr></tfoot>' : '') +
+    '</table>' +
     reportCardClose(today)
   );
 }
@@ -2317,6 +2401,89 @@ function renderPoBelumOverlay() {
 function bindPoBelumEvents() {
   const closeBtn = document.getElementById('pobelum-close');
   if (closeBtn) closeBtn.addEventListener('click', () => { state.poBelumOpen = false; render(); });
+}
+
+// ---------------- Live "Cek Mutasi Pallet per Customer" search overlay ----------------
+// Type a customer name to instantly see their per-day masuk/keluar movements
+// (and a running-balance style summary) for the chosen period -- everything
+// here is computed fresh from state on every render, so it's always current.
+function renderMutasiOverlay() {
+  const range = state.mutasiRange;
+  const q = (state.mutasiSearch || '').trim().toLowerCase();
+  const summary = computeMutasiReport(range.from, range.to);
+  const matched = q ? summary.rows.filter((r) => r.nama.toLowerCase().indexOf(q) !== -1) : summary.rows;
+
+  return (
+    '<div class="review-toolbar">' +
+      '<div class="review-toolbar-title">Cek Mutasi Pallet</div>' +
+      '<div class="review-toolbar-actions">' +
+        '<button type="button" id="mutasi-close" class="review-btn close">&times; Tutup</button>' +
+      '</div>' +
+    '</div>' +
+    '<div class="review-wrap">' +
+      '<div class="settings-stack">' +
+        '<div class="card">' +
+          '<input id="mutasi-search" class="field-input" placeholder="Cari nama customer..." value="' + esc(state.mutasiSearch || '') + '">' +
+          '<div class="date-filter-controls" style="margin-top:10px;">' +
+            '<input type="date" id="mutasi-from" class="field-input mono" value="' + esc(range.from) + '">' +
+            '<span style="align-self:center;color:#9AA3BE;">s/d</span>' +
+            '<input type="date" id="mutasi-to" class="field-input mono" value="' + esc(range.to) + '">' +
+          '</div>' +
+        '</div>' +
+        '<div id="mutasi-results">' + renderMutasiResults(matched, range) + '</div>' +
+      '</div>' +
+    '</div>'
+  );
+}
+
+function renderMutasiResults(matched, range) {
+  if (matched.length === 0) {
+    return emptyState('Tidak ada mutasi untuk pencarian ini pada periode tersebut.');
+  }
+  return matched.map((r) => {
+    const detail = computeMutasiDetail(r.nama, range.from, range.to);
+    return (
+      '<div class="card">' +
+        '<div class="card-head"><div class="card-head-icon">&#128666;</div><div><div class="card-title">' + esc(r.nama) + '</div><div class="card-subtitle">' + esc(r.ukuran || '-') + '</div></div></div>' +
+        '<div class="wh-resume-grid" style="grid-template-columns:1fr 1fr 1fr 1fr;">' +
+          '<div class="wh-resume-box"><div class="wh-resume-value" style="font-size:16px;">' + fmtNum(r.stokAwal) + '</div><div class="wh-resume-label">Awal</div></div>' +
+          '<div class="wh-resume-box good"><div class="wh-resume-value" style="font-size:16px;">+' + fmtNum(r.masuk) + '</div><div class="wh-resume-label">Masuk</div></div>' +
+          '<div class="wh-resume-box warn"><div class="wh-resume-value" style="font-size:16px;">-' + fmtNum(r.keluar) + '</div><div class="wh-resume-label">Keluar</div></div>' +
+          '<div class="wh-resume-box good"><div class="wh-resume-value" style="font-size:16px;">' + fmtNum(r.sisaStok) + '</div><div class="wh-resume-label">Sisa</div></div>' +
+        '</div>' +
+        (detail.length === 0 ? '<div class="record-meta small" style="margin-top:8px;">Tidak ada transaksi pada periode ini.</div>' : (
+          '<div class="record-list" style="margin-top:8px;">' + detail.map((e) => (
+            '<div class="record-row">' +
+              '<div class="record-main"><div class="record-meta">' + fmtDate(e.tanggal) + '</div></div>' +
+              (e.masuk ? '<div class="record-qty good">+' + fmtNum(e.masuk) + '<span>masuk</span></div>' : '') +
+              (e.keluar ? '<div class="record-qty out">-' + fmtNum(e.keluar) + '<span>keluar</span></div>' : '') +
+            '</div>'
+          )).join('') + '</div>'
+        )) +
+      '</div>'
+    );
+  }).join('');
+}
+
+function bindMutasiEvents() {
+  const closeBtn = document.getElementById('mutasi-close');
+  if (closeBtn) closeBtn.addEventListener('click', () => { state.mutasiOpen = false; render(); });
+
+  const search = document.getElementById('mutasi-search');
+  if (search) {
+    search.addEventListener('input', () => {
+      state.mutasiSearch = search.value;
+      const q = state.mutasiSearch.trim().toLowerCase();
+      const summary = computeMutasiReport(state.mutasiRange.from, state.mutasiRange.to);
+      const matched = q ? summary.rows.filter((r) => r.nama.toLowerCase().indexOf(q) !== -1) : summary.rows;
+      document.getElementById('mutasi-results').innerHTML = renderMutasiResults(matched, state.mutasiRange);
+    });
+  }
+
+  const fromInput = document.getElementById('mutasi-from');
+  const toInput = document.getElementById('mutasi-to');
+  if (fromInput) fromInput.addEventListener('change', () => { state.mutasiRange.from = fromInput.value; render(); });
+  if (toInput) toInput.addEventListener('change', () => { state.mutasiRange.to = toInput.value; render(); });
 }
 
 // Makes the four dashboard stat cards clickable, each opening a live-updating
@@ -2764,6 +2931,8 @@ function bindKeluarEvents() {
 
   const openReportBtn = document.getElementById('open-report-keluar');
   if (openReportBtn) openReportBtn.addEventListener('click', () => openReport('keluar'));
+  const openMutasiBtn = document.getElementById('open-mutasi-live');
+  if (openMutasiBtn) openMutasiBtn.addEventListener('click', () => { state.mutasiOpen = true; render(); });
 }
 
 function bindOsEvents() {
