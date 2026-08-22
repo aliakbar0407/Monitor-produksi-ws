@@ -572,13 +572,14 @@ function poInToDb(r) {
     no_po: r.noPo || '', tgl_kirim: r.tglKirim || null, catatan: r.catatan || '',
     logged_at: r.loggedAt || new Date().toISOString(),
     created_by: r.created_by || (state.account ? state.account.nama : ''),
+    updated_by: r.updated_by || (state.account ? state.account.nama : ''),
   };
 }
 function dbToPoIn(row) {
   return {
     id: row.id, tanggal: row.tanggal, nama: row.nama, ukuran: row.ukuran || '', qty: row.qty,
     noPo: row.no_po || '', tglKirim: row.tgl_kirim || '', catatan: row.catatan || '',
-    loggedAt: row.logged_at || '', created_by: row.created_by || '',
+    loggedAt: row.logged_at || '', created_by: row.created_by || '', updated_by: row.updated_by || '',
   };
 }
 function produksiToDb(r) {
@@ -587,13 +588,14 @@ function produksiToDb(r) {
     sumber: r.sumber || 'sendiri', subcont_nama: r.subcontNama || '',
     logged_at: r.loggedAt || new Date().toISOString(),
     catatan: r.catatan || '', created_by: r.created_by || (state.account ? state.account.nama : ''),
+    updated_by: r.updated_by || (state.account ? state.account.nama : ''),
   };
 }
 function dbToProduksi(row) {
   return {
     id: row.id, tanggal: row.tanggal, nama: row.nama, ukuran: row.ukuran || '', qty: row.qty,
     sumber: row.sumber || 'sendiri', subcontNama: row.subcont_nama || '',
-    loggedAt: row.logged_at || '', catatan: row.catatan || '', created_by: row.created_by || '',
+    loggedAt: row.logged_at || '', catatan: row.catatan || '', created_by: row.created_by || '', updated_by: row.updated_by || '',
   };
 }
 function keluarToDb(r) {
@@ -602,12 +604,14 @@ function keluarToDb(r) {
     nopol: r.nopol || '', catatan: r.catatan || '',
     logged_at: r.loggedAt || new Date().toISOString(),
     created_by: r.created_by || (state.account ? state.account.nama : ''),
+    updated_by: r.updated_by || (state.account ? state.account.nama : ''),
   };
 }
 function dbToKeluar(row) {
   return {
     id: row.id, tanggal: row.tanggal, nama: row.nama, ukuran: row.ukuran || '', qty: row.qty,
-    nopol: row.nopol || '', catatan: row.catatan || '', loggedAt: row.logged_at || '', created_by: row.created_by || '',
+    nopol: row.nopol || '', catatan: row.catatan || '', loggedAt: row.logged_at || '',
+    created_by: row.created_by || '', updated_by: row.updated_by || '',
   };
 }
 
@@ -858,8 +862,43 @@ function doLogout() {
 }
 
 // ---------------- PO Masuk / Produksi / Keluar CRUD ----------------
+// Checks Supabase directly (not the local cache) for a row already matching
+// the same tanggal + nama (whitespace/case-insensitive) + qty, so a
+// duplicate entered moments ago by a teammate on a different device/tab is
+// still caught even if local realtime sync hasn't landed yet. Fails "open"
+// (returns null, i.e. allows the save) on a network/query error, so a
+// connectivity hiccup never blocks legitimate work.
+async function findDuplicateOnServer(table, tanggal, nama, qty, excludeId) {
+  try {
+    const { data, error } = await sb.from(table).select('id, nama, tanggal, qty, created_by, logged_at')
+      .eq('tanggal', tanggal).eq('qty', Number(qty) || 0);
+    if (error || !data) return null;
+    const key = normKey(nama);
+    return data.find((r) => normKey(r.nama) === key && r.id !== excludeId) || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function duplicateWarningMessage(dup, nama, tanggal, qty) {
+  return (
+    'Data ini sepertinya sudah pernah diinput' + (dup.created_by ? ' oleh ' + dup.created_by : '') + (dup.logged_at ? ' pada ' + fmtDateTime(dup.logged_at) : '') + '.\n\n' +
+    'Customer: ' + nama + '\nTanggal: ' + fmtDate(tanggal) + '\nQty: ' + fmtNum(qty) + '\n\n' +
+    'Input ini dibatalkan supaya data tidak double. Jika ini memang transaksi lain, ubah salah satu nilai (misalnya qty atau catatan) lalu simpan lagi.'
+  );
+}
+
 async function addPoIn(record) {
-  const row = Object.assign({ id: uid(), loggedAt: new Date().toISOString(), created_by: state.account.nama }, record);
+  const btn = document.getElementById('poin-submit');
+  const original = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = 'Memeriksa data...'; }
+  const dup = await findDuplicateOnServer('po_masuk', record.tanggal, record.nama, record.qty);
+  if (dup) {
+    if (btn) { btn.disabled = false; btn.innerHTML = original; }
+    alert(duplicateWarningMessage(dup, record.nama, record.tanggal, record.qty));
+    return;
+  }
+  const row = Object.assign({ id: uid(), loggedAt: new Date().toISOString(), created_by: state.account.nama, updated_by: state.account.nama }, record);
   state.poIn = [row, ...state.poIn];
   render();
   rememberCustomer(row.nama, row.ukuran);
@@ -867,7 +906,16 @@ async function addPoIn(record) {
   if (error) console.error('addPoIn', error);
 }
 async function addProduksi(record) {
-  const row = Object.assign({ id: uid(), loggedAt: new Date().toISOString(), created_by: state.account.nama }, record);
+  const btn = document.getElementById('prod-submit');
+  const original = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = 'Memeriksa data...'; }
+  const dup = await findDuplicateOnServer('produksi', record.tanggal, record.nama, record.qty);
+  if (dup) {
+    if (btn) { btn.disabled = false; btn.innerHTML = original; }
+    alert(duplicateWarningMessage(dup, record.nama, record.tanggal, record.qty));
+    return;
+  }
+  const row = Object.assign({ id: uid(), loggedAt: new Date().toISOString(), created_by: state.account.nama, updated_by: state.account.nama }, record);
   state.produksi = [row, ...state.produksi];
   render();
   rememberCustomer(row.nama, row.ukuran);
@@ -875,7 +923,16 @@ async function addProduksi(record) {
   if (error) console.error('addProduksi', error);
 }
 async function addKeluar(record) {
-  const row = Object.assign({ id: uid(), loggedAt: new Date().toISOString(), created_by: state.account.nama }, record);
+  const btn = document.getElementById('keluar-submit');
+  const original = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = 'Memeriksa data...'; }
+  const dup = await findDuplicateOnServer('pallet_keluar', record.tanggal, record.nama, record.qty);
+  if (dup) {
+    if (btn) { btn.disabled = false; btn.innerHTML = original; }
+    alert(duplicateWarningMessage(dup, record.nama, record.tanggal, record.qty));
+    return;
+  }
+  const row = Object.assign({ id: uid(), loggedAt: new Date().toISOString(), created_by: state.account.nama, updated_by: state.account.nama }, record);
   state.keluar = [row, ...state.keluar];
   render();
   rememberCustomer(row.nama, row.ukuran);
@@ -883,7 +940,8 @@ async function addKeluar(record) {
   if (error) console.error('addKeluar', error);
 }
 async function updatePoIn(id, record) {
-  const row = Object.assign({ id, loggedAt: new Date().toISOString() }, record);
+  const existing = state.poIn.find((r) => r.id === id) || {};
+  const row = Object.assign({}, existing, record, { id, loggedAt: new Date().toISOString(), created_by: existing.created_by, updated_by: state.account.nama });
   state.poIn = state.poIn.map((r) => (r.id === id ? row : r));
   state.editing.poin = null;
   render();
@@ -891,7 +949,8 @@ async function updatePoIn(id, record) {
   if (error) console.error('updatePoIn', error);
 }
 async function updateProduksi(id, record) {
-  const row = Object.assign({ id, loggedAt: new Date().toISOString() }, record);
+  const existing = state.produksi.find((r) => r.id === id) || {};
+  const row = Object.assign({}, existing, record, { id, loggedAt: new Date().toISOString(), created_by: existing.created_by, updated_by: state.account.nama });
   state.produksi = state.produksi.map((r) => (r.id === id ? row : r));
   state.editing.produksi = null;
   render();
@@ -899,7 +958,8 @@ async function updateProduksi(id, record) {
   if (error) console.error('updateProduksi', error);
 }
 async function updateKeluar(id, record) {
-  const row = Object.assign({ id, loggedAt: new Date().toISOString() }, record);
+  const existing = state.keluar.find((r) => r.id === id) || {};
+  const row = Object.assign({}, existing, record, { id, loggedAt: new Date().toISOString(), created_by: existing.created_by, updated_by: state.account.nama });
   state.keluar = state.keluar.map((r) => (r.id === id ? row : r));
   state.editing.keluar = null;
   render();
@@ -1722,6 +1782,7 @@ function renderPoInList(rows) {
         '<div class="record-main">' +
           '<div class="record-name">' + esc(r.nama) + '</div>' +
           '<div class="record-meta">' + esc(r.ukuran || '-') + ' &middot; ' + fmtDate(r.tanggal) + (r.noPo ? ' &middot; PO ' + esc(r.noPo) : '') + '</div>' +
+          '<div class="record-meta small">' + (actorLabel(r).replace(/^ &middot; /, '') || '-') + '</div>' +
           (r.tglKirim ? '<div class="record-meta">Kirim: ' + fmtDate(r.tglKirim) + '</div>' : '') +
           (r.catatan ? '<div class="record-note">' + esc(r.catatan) + '</div>' : '') +
         '</div>' +
@@ -1797,6 +1858,7 @@ function renderProduksiList(rows) {
         '<div class="record-main">' +
           '<div class="record-name">' + esc(r.nama) + (r.sumber === 'subcont' ? ' <span class="type-tag po">SUBCONT</span>' : '') + '</div>' +
           '<div class="record-meta">' + esc(r.ukuran || '-') + ' &middot; ' + fmtDate(r.tanggal) + (r.sumber === 'subcont' && r.subcontNama ? ' &middot; dari ' + esc(r.subcontNama) : '') + '</div>' +
+          '<div class="record-meta small">' + (actorLabel(r).replace(/^ &middot; /, '') || '-') + '</div>' +
           (r.catatan ? '<div class="record-note">' + esc(r.catatan) + '</div>' : '') +
         '</div>' +
         '<div class="record-qty good">' + fmtNum(r.qty) + '<span>pcs</span></div>' +
@@ -1851,6 +1913,7 @@ function renderKeluarList(rows) {
         '<div class="record-main">' +
           '<div class="record-name">' + esc(r.nama) + '</div>' +
           '<div class="record-meta">' + esc(r.ukuran || '-') + ' &middot; ' + fmtDate(r.tanggal) + (r.nopol ? ' &middot; ' + esc(r.nopol) : '') + '</div>' +
+          '<div class="record-meta small">' + (actorLabel(r).replace(/^ &middot; /, '') || '-') + '</div>' +
           (r.catatan ? '<div class="record-note">' + esc(r.catatan) + '</div>' : '') +
         '</div>' +
         '<div class="record-qty out">' + fmtNum(r.qty) + '<span>pcs</span></div>' +
@@ -2064,7 +2127,7 @@ function renderDashboardTab() {
             '<div class="record-row">' +
               '<div class="record-main">' +
                 '<div class="record-name">' + esc(r.nama) + '</div>' +
-                '<div class="record-meta"><span class="type-tag ' + r._type + '">' + r._label + '</span> ' + (r.loggedAt ? fmtDateTime(r.loggedAt) : fmtDate(r.tanggal) + ' (tgl input lama)') + '</div>' +
+                '<div class="record-meta"><span class="type-tag ' + r._type + '">' + r._label + '</span> ' + (r.loggedAt ? fmtDateTime(r.loggedAt) : fmtDate(r.tanggal) + ' (tgl input lama)') + actorLabel(r) + '</div>' +
               '</div>' +
               '<div class="record-qty ' + (r._type === 'produksi' ? 'good' : r._type === 'keluar' ? 'out' : '') + '">' + fmtNum(r.qty) + '<span>pcs</span></div>' +
             '</div>'
@@ -2626,6 +2689,17 @@ function buildActivityFeed() {
   ].sort((a, b) => (a._ts < b._ts ? 1 : -1));
 }
 
+// Small "oleh <nama>" label shown next to each activity/history row. If the
+// record was edited by someone other than whoever originally created it,
+// both names are shown so it's clear who touched it last.
+function actorLabel(r) {
+  if (!r.created_by && !r.updated_by) return '';
+  if (r.updated_by && r.created_by && r.updated_by !== r.created_by) {
+    return ' &middot; dibuat ' + esc(r.created_by) + ', diedit ' + esc(r.updated_by);
+  }
+  return ' &middot; oleh ' + esc(r.updated_by || r.created_by);
+}
+
 // ---------------- Full "Log Aktivitas" overlay (all history, browsable) ----------------
 // Opened from the dashboard's "Lihat semua aktivitas" link. Shows every PO
 // Masuk / Produksi / Subcont / Pallet Keluar entry ever recorded, newest
@@ -2660,7 +2734,7 @@ function renderActivityLogOverlay() {
               '<div class="record-row">' +
                 '<div class="record-main">' +
                   '<div class="record-name">' + esc(r.nama) + '</div>' +
-                  '<div class="record-meta"><span class="type-tag ' + r._type + '">' + r._label + '</span> ' + (r.loggedAt ? fmtDateTime(r.loggedAt) : fmtDate(r.tanggal) + ' (tgl input lama)') + '</div>' +
+                  '<div class="record-meta"><span class="type-tag ' + r._type + '">' + r._label + '</span> ' + (r.loggedAt ? fmtDateTime(r.loggedAt) : fmtDate(r.tanggal) + ' (tgl input lama)') + actorLabel(r) + '</div>' +
                   (r.catatan ? '<div class="record-note">' + esc(r.catatan) + '</div>' : '') +
                 '</div>' +
                 '<div class="record-qty ' + (r._type === 'produksi' ? 'good' : r._type === 'keluar' ? 'out' : '') + '">' + fmtNum(r.qty) + '<span>pcs</span></div>' +
