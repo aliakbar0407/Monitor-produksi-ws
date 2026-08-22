@@ -365,6 +365,35 @@ button, input { font-family: inherit; }
 }
 .tab-btn .tab-icon { font-size: 18px; line-height: 1; }
 .tab-btn.active { color: #E36928; }
+
+/* ---------- AI Assist ---------- */
+.ai-fab {
+  position: fixed; right: 16px; bottom: calc(64px + env(safe-area-inset-bottom));
+  width: 52px; height: 52px; border-radius: 50%; border: none; z-index: 50;
+  background: linear-gradient(135deg, #344DA1, #E36928); color: #FFFFFF; font-size: 22px;
+  box-shadow: 0 4px 14px rgba(30,42,74,0.35); cursor: pointer; display: flex; align-items: center; justify-content: center;
+}
+.ai-fab:active { transform: scale(0.95); }
+.ai-overlay .review-wrap { display: flex; flex-direction: column; padding: 0; height: calc(100% - 52px); }
+.ai-chat-scroll { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.ai-bubble { max-width: 85%; padding: 10px 13px; border-radius: 14px; font-size: 13px; line-height: 1.45; white-space: pre-line; }
+.ai-bubble.ai { align-self: flex-start; background: #FFFFFF; border: 1px solid #DCE2F0; color: #1E2A4A; border-bottom-left-radius: 4px; }
+.ai-bubble.user { align-self: flex-end; background: #344DA1; color: #FFFFFF; border-bottom-right-radius: 4px; }
+.ai-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 14px 10px; }
+.ai-chip {
+  border: 1.5px solid #DCE2F0; background: #FFFFFF; border-radius: 999px; padding: 7px 12px;
+  font-size: 12px; font-weight: 600; color: #344DA1; cursor: pointer; font-family: inherit;
+}
+.ai-chip:active { background: #F0F3FB; }
+.ai-input-row {
+  display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid #DCE2F0; background: #FFFFFF;
+  padding-bottom: calc(10px + env(safe-area-inset-bottom));
+}
+.ai-input-row input { flex: 1; }
+.ai-send-btn {
+  background: #344DA1; color: #FFFFFF; border: none; border-radius: 10px; padding: 0 16px;
+  font-weight: 700; font-size: 13px; cursor: pointer; font-family: inherit;
+}
 .loading-wrap-full {
   min-height: 100vh; display: flex; align-items: center; justify-content: center;
   gap: 8px; color: #7A8296; font-size: 13px; background: #F3F5FA;
@@ -563,6 +592,8 @@ const state = {
   mutasiRange: { from: firstDayOfMonthISO(), to: todayISO() },
   activityLogOpen: false, // whether the full "Log Aktivitas" overlay (all history, browsable) is open
   activityLogDate: '', // yyyy-mm-dd filter on the real entry date (loggedAt), '' = show all
+  aiOpen: false, // whether the AI Assist chat popup is open
+  aiMessages: [], // { role: 'user' | 'ai', text } -- in-memory only, resets on reload
   settingsSection: null, // null = show the compact settings menu list; otherwise one of
                           // 'truck' | 'baseline' | 'team' | 'profile' | 'password' | 'pin'
   pinModal: null,
@@ -1523,6 +1554,8 @@ function renderShell() {
       '<div id="mutasi-overlay" class="review-overlay ' + (state.mutasiOpen ? 'open' : '') + '">' + (state.mutasiOpen ? renderMutasiOverlay() : '') + '</div>' +
       '<div id="activitylog-overlay" class="review-overlay ' + (state.activityLogOpen ? 'open' : '') + '">' + (state.activityLogOpen ? renderActivityLogOverlay() : '') + '</div>' +
       (state.pinModal ? renderPinModal() : '') +
+      '<button type="button" id="ai-fab" class="ai-fab" title="AI Assist">&#10024;</button>' +
+      '<div id="ai-overlay" class="review-overlay ai-overlay ' + (state.aiOpen ? 'open' : '') + '">' + (state.aiOpen ? renderAiOverlay() : '') + '</div>' +
     '</div>'
   );
 }
@@ -1569,6 +1602,7 @@ function bindShellEvents() {
   bindPoBelumEvents();
   bindMutasiEvents();
   bindActivityLogEvents();
+  bindAiEvents();
   bindDashboardCardEvents();
 }
 
@@ -2784,6 +2818,232 @@ function bindActivityLogEvents() {
   if (dateFilter) dateFilter.addEventListener('change', () => { state.activityLogDate = dateFilter.value; render(); });
   const dateFilterClear = document.getElementById('activitylog-datefilter-clear');
   if (dateFilterClear) dateFilterClear.addEventListener('click', () => { state.activityLogDate = ''; render(); });
+}
+
+// ---------------- AI Assist (local, rule-based -- no external API/key) ----------------
+// A lightweight keyword-matching "assistant" that answers questions about the
+// app's OWN live data (production today, stock, OS/shortages, deliveries,
+// etc.) by reading straight from `state`/`computeAggregates()`. No network
+// call, no API key, no cost -- but it only understands the question patterns
+// below, not free-form conversation.
+const AI_SUGGESTIONS = [
+  'Berapa hasil produksi hari ini?',
+  'Berapa PO masuk hari ini?',
+  'Berapa pallet keluar hari ini?',
+  'Berapa total stok palet?',
+  'OS produksi apa yang paling mendesak?',
+  'Berapa PO yang belum diproduksi?',
+  'Berapa subcont bulan ini?',
+];
+
+// Finds a known customer name mentioned inside the question text, matching
+// on whole "significant" words (4+ letters) so short words like "PT" or
+// "dan" never cause a false match. Picks the shortest matching customer name
+// when several could match, since that's usually the most specific.
+function aiFindCustomer(qLower) {
+  const words = qLower.split(/[^a-z0-9]+/i).filter((w) => w.length >= 4);
+  if (words.length === 0) return null;
+  let best = null;
+  CUSTOMER_LIST.forEach((c) => {
+    const nameLower = c.n.toLowerCase();
+    words.forEach((w) => {
+      if (nameLower.indexOf(w) !== -1 && (!best || nameLower.length < best.length)) best = c.n;
+    });
+  });
+  return best;
+}
+
+// Figures out which date range the question refers to ("hari ini" / default,
+// "kemarin", "minggu ini", "bulan ini") and returns { from, to, label }.
+function aiFindRange(qLower) {
+  const today = todayISO();
+  if (qLower.indexOf('kemarin') !== -1) {
+    const d = new Date(); d.setDate(d.getDate() - 1);
+    const iso = d.toISOString().slice(0, 10);
+    return { from: iso, to: iso, label: 'kemarin (' + fmtDate(iso) + ')' };
+  }
+  if (qLower.indexOf('minggu ini') !== -1) {
+    const d = new Date();
+    const dow = d.getDay();
+    const diffToMonday = dow === 0 ? 6 : dow - 1;
+    const monday = new Date(d); monday.setDate(d.getDate() - diffToMonday);
+    return { from: monday.toISOString().slice(0, 10), to: today, label: 'minggu ini' };
+  }
+  if (qLower.indexOf('bulan ini') !== -1) {
+    return { from: firstDayOfMonthISO(), to: today, label: 'bulan ini (' + periodLabel(firstDayOfMonthISO(), today) + ')' };
+  }
+  return { from: today, to: today, label: 'hari ini (' + fmtDate(today) + ')' };
+}
+
+// The core intent-matching engine. Returns a plain-text answer string.
+function aiAnswer(question) {
+  const qLower = question.toLowerCase();
+  const customer = aiFindCustomer(qLower);
+  const range = aiFindRange(qLower);
+
+  // Greeting / small talk
+  if (/^(halo|hai|hi|hey|pagi|siang|sore|malam)\b/.test(qLower.trim())) {
+    return greetingLabel() + '! Ada yang bisa saya bantu cek? Coba tanya soal produksi, stok, PO, atau OS hari ini.';
+  }
+  if (/terima\s*kasih|makasih|thanks/.test(qLower)) {
+    return 'Sama-sama! Ada lagi yang mau dicek?';
+  }
+
+  // Subcont
+  if (qLower.indexOf('subcont') !== -1) {
+    const filtered = state.produksi.filter((r) => r.sumber === 'subcont' && r.tanggal >= range.from && r.tanggal <= range.to && (!customer || normKey(r.nama) === normKey(customer)));
+    const total = filtered.reduce((s, r) => s + (Number(r.qty) || 0), 0);
+    if (filtered.length === 0) return 'Tidak ada pallet subcont ' + range.label + (customer ? ' untuk ' + customer : '') + '.';
+    const bySupplier = {};
+    filtered.forEach((r) => { const k = r.subcontNama || '(tanpa nama)'; bySupplier[k] = (bySupplier[k] || 0) + (Number(r.qty) || 0); });
+    const supplierLines = Object.keys(bySupplier).map((k) => '- ' + k + ': ' + fmtNum(bySupplier[k]) + ' pcs').join('\n');
+    return 'Pallet subcont ' + range.label + (customer ? ' untuk ' + customer : '') + ': ' + fmtNum(total) + ' pcs.\n\n' + supplierLines;
+  }
+
+  // Hasil produksi (sendiri, excludes subcont)
+  if (/produksi|diproduksi/.test(qLower) && !/po\s*masuk|belum\s*produksi|kekurangan/.test(qLower)) {
+    const filtered = state.produksi.filter((r) => r.sumber !== 'subcont' && r.tanggal >= range.from && r.tanggal <= range.to && (!customer || normKey(r.nama) === normKey(customer)));
+    const total = filtered.reduce((s, r) => s + (Number(r.qty) || 0), 0);
+    if (filtered.length === 0) return 'Belum ada hasil produksi ' + range.label + (customer ? ' untuk ' + customer : '') + '.';
+    if (customer) return 'Hasil produksi ' + customer + ' ' + range.label + ': ' + fmtNum(total) + ' pcs (' + filtered.length + ' entri).';
+    const byCust = {};
+    filtered.forEach((r) => { byCust[r.nama] = (byCust[r.nama] || 0) + (Number(r.qty) || 0); });
+    const top = Object.keys(byCust).sort((a, b) => byCust[b] - byCust[a]).slice(0, 5)
+      .map((n) => '- ' + n + ': ' + fmtNum(byCust[n]) + ' pcs').join('\n');
+    return 'Hasil produksi ' + range.label + ': ' + fmtNum(total) + ' pcs dari ' + Object.keys(byCust).length + ' customer.\n\n' + top;
+  }
+
+  // PO Masuk
+  if (/po\s*masuk|order\s*masuk/.test(qLower)) {
+    const filtered = state.poIn.filter((r) => r.tanggal >= range.from && r.tanggal <= range.to && (!customer || normKey(r.nama) === normKey(customer)));
+    const total = filtered.reduce((s, r) => s + (Number(r.qty) || 0), 0);
+    if (filtered.length === 0) return 'Tidak ada PO masuk ' + range.label + (customer ? ' untuk ' + customer : '') + '.';
+    return 'PO masuk ' + range.label + (customer ? ' untuk ' + customer : '') + ': ' + fmtNum(total) + ' pcs (' + filtered.length + ' PO).';
+  }
+
+  // Pallet keluar / kirim
+  if (/pallet\s*keluar|palet\s*keluar|dikirim|kirim\s*wh|keluar\s*wh/.test(qLower) || (/keluar/.test(qLower) && !/kekurangan/.test(qLower))) {
+    const filtered = state.keluar.filter((r) => r.tanggal >= range.from && r.tanggal <= range.to && (!customer || normKey(r.nama) === normKey(customer)));
+    const total = filtered.reduce((s, r) => s + (Number(r.qty) || 0), 0);
+    if (filtered.length === 0) return 'Tidak ada pallet keluar ' + range.label + (customer ? ' untuk ' + customer : '') + '.';
+    return 'Pallet keluar ' + range.label + (customer ? ' untuk ' + customer : '') + ': ' + fmtNum(total) + ' pcs (' + filtered.length + ' pengiriman).';
+  }
+
+  // OS / kekurangan produksi
+  if (/\bos\b|kekurangan|belum\s*produksi|mendesak|prioritas/.test(qLower)) {
+    const agg = computeAggregates();
+    if (customer) {
+      const row = agg.find((r) => normKey(r.nama) === normKey(customer));
+      if (!row || row.os <= 0) return customer + ' sudah tidak ada kekurangan produksi (lunas atau lebih).';
+      const tgl = nearestTglKirim(row.nama);
+      return 'OS ' + customer + ': kurang ' + fmtNum(row.os) + ' pcs.' + (tgl ? ' Target kirim: ' + fmtDate(tgl) + ' (' + daysUntilLabel(tgl, todayISO()) + ').' : '');
+    }
+    const kurang = agg.filter((r) => r.os > 0);
+    if (kurang.length === 0) return 'Semua customer sudah lunas produksinya, tidak ada kekurangan saat ini.';
+    const withJadwal = kurang.map((r) => Object.assign({}, r, { _tgl: nearestTglKirim(r.nama) }))
+      .sort((a, b) => {
+        if (a._tgl && b._tgl) return a._tgl < b._tgl ? -1 : a._tgl > b._tgl ? 1 : b.os - a.os;
+        if (a._tgl && !b._tgl) return -1;
+        if (!a._tgl && b._tgl) return 1;
+        return b.os - a.os;
+      }).slice(0, 5);
+    const totalOs = kurang.reduce((s, r) => s + r.os, 0);
+    const lines = withJadwal.map((r) => '- ' + r.nama + ': kurang ' + fmtNum(r.os) + ' pcs' + (r._tgl ? ' (' + daysUntilLabel(r._tgl, todayISO()) + ')' : '')).join('\n');
+    return 'Ada ' + kurang.length + ' customer kekurangan produksi, total ' + fmtNum(totalOs) + ' pcs. Paling mendesak:\n\n' + lines;
+  }
+
+  // Stok palet
+  if (/stok|stock/.test(qLower)) {
+    const agg = computeAggregates();
+    if (customer) {
+      const row = agg.find((r) => normKey(r.nama) === normKey(customer));
+      if (!row) return 'Belum ada data stok untuk ' + customer + '.';
+      return 'Stok palet ' + customer + ': ' + fmtNum(row.stok) + ' pcs (siap kirim WH: ' + fmtNum(row.siapWH) + ', belum siap: ' + fmtNum(row.belumWH) + ').';
+    }
+    const withStok = agg.filter((r) => r.stok > 0);
+    const totalStok = withStok.reduce((s, r) => s + r.stok, 0);
+    const totalBelumWH = withStok.reduce((s, r) => s + r.belumWH, 0);
+    const habis = agg.filter((r) => r.stok <= 0 && (r.produksi > 0 || r.keluar > 0 || r.stokAwal !== 0)).length;
+    return 'Total stok palet: ' + fmtNum(totalStok) + ' pcs dari ' + withStok.length + ' customer (' + fmtNum(totalBelumWH) + ' pcs belum siap kirim WH). ' + habis + ' customer stoknya habis.';
+  }
+
+  // Aktivitas terakhir / siapa input
+  if (/aktivitas|siapa\s*(yang\s*)?input|siapa\s*(yang\s*)?edit/.test(qLower)) {
+    const feed = buildActivityFeed().slice(0, 5);
+    if (feed.length === 0) return 'Belum ada aktivitas tercatat.';
+    const lines = feed.map((r) => '- ' + r._label + ' ' + r.nama + ' (' + fmtNum(r.qty) + ' pcs) oleh ' + (r.updated_by || r.created_by || '?') + ', ' + (r.loggedAt ? fmtDateTime(r.loggedAt) : fmtDate(r.tanggal))).join('\n');
+    return 'Aktivitas terbaru:\n\n' + lines;
+  }
+
+  // Fallback
+  return (
+    'Maaf, saya belum paham pertanyaan itu. Saya bisa bantu jawab seputar data aplikasi ini, contohnya:\n\n' +
+    AI_SUGGESTIONS.slice(0, 4).map((s) => '- ' + s).join('\n')
+  );
+}
+
+function openAi() {
+  state.aiOpen = true;
+  if (state.aiMessages.length === 0) {
+    state.aiMessages.push({ role: 'ai', text: greetingLabel() + '! Saya bisa bantu cek data aplikasi ini secara langsung. Coba tanya salah satu di bawah, atau ketik pertanyaan sendiri.' });
+  }
+  render();
+  const scroll = document.getElementById('ai-chat-scroll');
+  if (scroll) scroll.scrollTop = scroll.scrollHeight;
+}
+function closeAi() { state.aiOpen = false; render(); }
+
+function aiSend(text) {
+  const q = (text || '').trim();
+  if (!q) return;
+  state.aiMessages.push({ role: 'user', text: q });
+  state.aiMessages.push({ role: 'ai', text: aiAnswer(q) });
+  render();
+  const input = document.getElementById('ai-input');
+  if (input) input.value = '';
+  const scroll = document.getElementById('ai-chat-scroll');
+  if (scroll) scroll.scrollTop = scroll.scrollHeight;
+}
+
+function renderAiOverlay() {
+  return (
+    '<div class="review-toolbar">' +
+      '<div class="review-toolbar-title">&#10024; AI Assist</div>' +
+      '<div class="review-toolbar-actions">' +
+        '<button type="button" id="ai-close" class="review-btn close">&times; Tutup</button>' +
+      '</div>' +
+    '</div>' +
+    '<div class="review-wrap">' +
+      '<div id="ai-chat-scroll" class="ai-chat-scroll">' +
+        state.aiMessages.map((m) => '<div class="ai-bubble ' + m.role + '">' + esc(m.text) + '</div>').join('') +
+      '</div>' +
+      '<div class="ai-chips">' +
+        AI_SUGGESTIONS.map((s) => '<button type="button" class="ai-chip" data-ai-chip="' + esc(s) + '">' + esc(s) + '</button>').join('') +
+      '</div>' +
+      '<div class="ai-input-row">' +
+        '<input id="ai-input" class="field-input" placeholder="Tanya sesuatu...">' +
+        '<button type="button" id="ai-send" class="ai-send-btn">Kirim</button>' +
+      '</div>' +
+    '</div>'
+  );
+}
+
+function bindAiEvents() {
+  const fab = document.getElementById('ai-fab');
+  if (fab) fab.addEventListener('click', openAi);
+
+  const closeBtn = document.getElementById('ai-close');
+  if (closeBtn) closeBtn.addEventListener('click', closeAi);
+
+  const sendBtn = document.getElementById('ai-send');
+  const input = document.getElementById('ai-input');
+  if (sendBtn && input) {
+    sendBtn.addEventListener('click', () => aiSend(input.value));
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') aiSend(input.value); });
+  }
+  document.querySelectorAll('[data-ai-chip]').forEach((chip) => {
+    chip.addEventListener('click', () => aiSend(chip.getAttribute('data-ai-chip')));
+  });
 }
 
 // Makes the four dashboard stat cards clickable, each opening a live-updating
