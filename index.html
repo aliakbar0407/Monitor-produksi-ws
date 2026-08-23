@@ -368,10 +368,10 @@ button, input { font-family: inherit; }
 
 /* ---------- AI Assist ---------- */
 .ai-fab {
-  position: fixed; right: 16px; bottom: calc(64px + env(safe-area-inset-bottom));
-  width: 52px; height: 52px; border-radius: 50%; border: none; z-index: 50;
-  background: linear-gradient(135deg, #344DA1, #E36928); color: #FFFFFF; font-size: 22px;
-  box-shadow: 0 4px 14px rgba(30,42,74,0.35); cursor: pointer; display: flex; align-items: center; justify-content: center;
+  position: fixed; right: 12px; bottom: calc(58px + env(safe-area-inset-bottom));
+  width: 38px; height: 38px; border-radius: 50%; border: none; z-index: 50;
+  background: linear-gradient(135deg, #344DA1, #E36928); color: #FFFFFF; font-size: 16px;
+  box-shadow: 0 3px 10px rgba(30,42,74,0.35); cursor: pointer; display: flex; align-items: center; justify-content: center;
 }
 .ai-fab:active { transform: scale(0.95); }
 .ai-overlay .review-wrap { display: flex; flex-direction: column; padding: 0; height: calc(100% - 52px); }
@@ -2834,29 +2834,69 @@ const AI_SUGGESTIONS = [
   'OS produksi apa yang paling mendesak?',
   'Berapa PO yang belum diproduksi?',
   'Berapa subcont bulan ini?',
+  'Customer apa yang sudah kelebihan produksi?',
 ];
 
 // Finds a known customer name mentioned inside the question text, matching
-// on whole "significant" words (4+ letters) so short words like "PT" or
-// "dan" never cause a false match. Picks the shortest matching customer name
-// when several could match, since that's usually the most specific.
+// on whole tokens (not raw substrings) after stripping common "noise" words
+// -- generic app vocabulary ("stok", "palet", "produksi", "total", ...) and
+// company-type prefixes ("pt", "cv", "ud") are excluded from matching on
+// BOTH sides, so a question like "berapa total stok palet" never
+// accidentally matches a customer literally named "... PALET" just because
+// the word "palet" happens to appear in both. Numbers are allowed even when
+// short (e.g. "113") since they're often part of a customer's own name.
+const AI_STOPWORDS = [
+  'pt', 'cv', 'ud', 'palet', 'pallet', 'stok', 'stock', 'produksi', 'diproduksi', 'hasil',
+  'kirim', 'dikirim', 'keluar', 'masuk', 'kekurangan', 'kelebihan', 'lebih', 'kurang',
+  'belum', 'sudah', 'mendesak', 'prioritas', 'subcont', 'aktivitas', 'siapa', 'input',
+  'edit', 'diedit', 'hari', 'ini', 'kemarin', 'minggu', 'bulan', 'tanggal', 'tahun',
+  'berapa', 'apa', 'yang', 'untuk', 'dari', 'pada', 'total', 'semua', 'data', 'customer',
+  'nama', 'saya', 'kamu', 'tolong', 'coba', 'dong', 'dan', 'atau', 'ke', 'di', 'ada',
+  'the', 'os',
+];
+function aiTokenize(text) {
+  return text.toLowerCase().split(/[^a-z0-9]+/i).filter(Boolean);
+}
 function aiFindCustomer(qLower) {
-  const words = qLower.split(/[^a-z0-9]+/i).filter((w) => w.length >= 4);
-  if (words.length === 0) return null;
+  const qTokens = aiTokenize(qLower).filter((w) => AI_STOPWORDS.indexOf(w) === -1 && (w.length >= 3 || /^\d+$/.test(w)));
+  if (qTokens.length === 0) return null;
   let best = null;
+  let bestScore = 0;
   CUSTOMER_LIST.forEach((c) => {
-    const nameLower = c.n.toLowerCase();
-    words.forEach((w) => {
-      if (nameLower.indexOf(w) !== -1 && (!best || nameLower.length < best.length)) best = c.n;
+    const nameTokens = aiTokenize(c.n).filter((w) => AI_STOPWORDS.indexOf(w) === -1);
+    let score = 0;
+    qTokens.forEach((qt) => {
+      if (nameTokens.indexOf(qt) !== -1) score += qt.length >= 4 ? 2 : 1;
     });
+    if (score > 0 && (score > bestScore || (score === bestScore && best && c.n.length < best.length))) {
+      bestScore = score;
+      best = c.n;
+    }
   });
   return best;
 }
 
-// Figures out which date range the question refers to ("hari ini" / default,
-// "kemarin", "minggu ini", "bulan ini") and returns { from, to, label }.
+const BULAN_ALIASES = {
+  januari: 0, jan: 0, februari: 1, feb: 1, maret: 2, mar: 2, april: 3, apr: 3,
+  mei: 4, juni: 5, jun: 5, juli: 6, jul: 6, agustus: 7, agu: 7, ags: 7,
+  september: 8, sep: 8, sept: 8, oktober: 9, okt: 9, november: 10, nov: 10, desember: 11, des: 11,
+};
+
+// Figures out which date/date-range the question refers to. Checks for an
+// EXPLICIT date first ("tanggal 10 agustus", "10 agustus 2026") before
+// falling back to relative phrases ("hari ini" / default, "kemarin",
+// "minggu ini", "bulan ini"). Returns { from, to, label }.
 function aiFindRange(qLower) {
   const today = todayISO();
+
+  const explicit = qLower.match(/\b(\d{1,2})\s+(januari|jan|februari|feb|maret|mar|april|apr|mei|juni|jun|juli|jul|agustus|agu|ags|september|sept?|oktober|okt|november|nov|desember|des)\b(?:\s+(\d{4}))?/);
+  if (explicit) {
+    const day = Number(explicit[1]);
+    const month = BULAN_ALIASES[explicit[2]];
+    const year = explicit[3] ? Number(explicit[3]) : new Date().getFullYear();
+    const iso = year + '-' + String(month + 1).padStart(2, '0') + '-' + String(day).padStart(2, '0');
+    return { from: iso, to: iso, label: 'tanggal ' + fmtDate(iso) };
+  }
   if (qLower.indexOf('kemarin') !== -1) {
     const d = new Date(); d.setDate(d.getDate() - 1);
     const iso = d.toISOString().slice(0, 10);
@@ -2876,6 +2916,10 @@ function aiFindRange(qLower) {
 }
 
 // The core intent-matching engine. Returns a plain-text answer string.
+// NOTE: order matters -- OS/kekurangan/kelebihan detection runs BEFORE the
+// generic "hasil produksi" check, since a question like "kelebihan produksi"
+// contains the word "produksi" too and would otherwise be swallowed by the
+// more general production-total branch.
 function aiAnswer(question) {
   const qLower = question.toLowerCase();
   const customer = aiFindCustomer(qLower);
@@ -2900,8 +2944,42 @@ function aiAnswer(question) {
     return 'Pallet subcont ' + range.label + (customer ? ' untuk ' + customer : '') + ': ' + fmtNum(total) + ' pcs.\n\n' + supplierLines;
   }
 
+  // OS / kekurangan / kelebihan produksi (checked before the generic
+  // "hasil produksi" branch -- see note above)
+  if (/\bos\b|kekurangan|kelebihan|belum\s*produksi|mendesak|prioritas|lebih\s*produksi/.test(qLower)) {
+    const agg = computeAggregates();
+    const wantLebih = /kelebihan|lebih\s*produksi/.test(qLower);
+    if (customer) {
+      const row = agg.find((r) => normKey(r.nama) === normKey(customer));
+      if (!row || (wantLebih ? row.os >= 0 : row.os <= 0)) {
+        return customer + (wantLebih ? ' tidak ada kelebihan produksi saat ini.' : ' sudah tidak ada kekurangan produksi (lunas atau lebih).');
+      }
+      const tgl = nearestTglKirim(row.nama);
+      if (wantLebih) return 'Produksi ' + customer + ' lebih ' + fmtNum(Math.abs(row.os)) + ' pcs dari PO.';
+      return 'OS ' + customer + ': kurang ' + fmtNum(row.os) + ' pcs.' + (tgl ? ' Target kirim: ' + fmtDate(tgl) + ' (' + daysUntilLabel(tgl, todayISO()) + ').' : '');
+    }
+    if (wantLebih) {
+      const lebih = agg.filter((r) => r.os < 0).sort((a, b) => a.os - b.os);
+      if (lebih.length === 0) return 'Tidak ada customer dengan produksi lebih (surplus) saat ini.';
+      const lines = lebih.slice(0, 8).map((r) => '- ' + r.nama + ': lebih ' + fmtNum(Math.abs(r.os)) + ' pcs').join('\n');
+      return 'Ada ' + lebih.length + ' customer dengan produksi lebih dari PO:\n\n' + lines;
+    }
+    const kurang = agg.filter((r) => r.os > 0);
+    if (kurang.length === 0) return 'Semua customer sudah lunas produksinya, tidak ada kekurangan saat ini.';
+    const withJadwal = kurang.map((r) => Object.assign({}, r, { _tgl: nearestTglKirim(r.nama) }))
+      .sort((a, b) => {
+        if (a._tgl && b._tgl) return a._tgl < b._tgl ? -1 : a._tgl > b._tgl ? 1 : b.os - a.os;
+        if (a._tgl && !b._tgl) return -1;
+        if (!a._tgl && b._tgl) return 1;
+        return b.os - a.os;
+      }).slice(0, 5);
+    const totalOs = kurang.reduce((s, r) => s + r.os, 0);
+    const lines = withJadwal.map((r) => '- ' + r.nama + ': kurang ' + fmtNum(r.os) + ' pcs' + (r._tgl ? ' (' + daysUntilLabel(r._tgl, todayISO()) + ')' : '')).join('\n');
+    return 'Ada ' + kurang.length + ' customer kekurangan produksi, total ' + fmtNum(totalOs) + ' pcs. Paling mendesak:\n\n' + lines;
+  }
+
   // Hasil produksi (sendiri, excludes subcont)
-  if (/produksi|diproduksi/.test(qLower) && !/po\s*masuk|belum\s*produksi|kekurangan/.test(qLower)) {
+  if (/produksi|diproduksi/.test(qLower) && !/po\s*masuk/.test(qLower)) {
     const filtered = state.produksi.filter((r) => r.sumber !== 'subcont' && r.tanggal >= range.from && r.tanggal <= range.to && (!customer || normKey(r.nama) === normKey(customer)));
     const total = filtered.reduce((s, r) => s + (Number(r.qty) || 0), 0);
     if (filtered.length === 0) return 'Belum ada hasil produksi ' + range.label + (customer ? ' untuk ' + customer : '') + '.';
@@ -2922,34 +3000,11 @@ function aiAnswer(question) {
   }
 
   // Pallet keluar / kirim
-  if (/pallet\s*keluar|palet\s*keluar|dikirim|kirim\s*wh|keluar\s*wh/.test(qLower) || (/keluar/.test(qLower) && !/kekurangan/.test(qLower))) {
+  if (/pallet\s*keluar|palet\s*keluar|dikirim|kirim\s*wh|keluar\s*wh/.test(qLower) || /keluar/.test(qLower)) {
     const filtered = state.keluar.filter((r) => r.tanggal >= range.from && r.tanggal <= range.to && (!customer || normKey(r.nama) === normKey(customer)));
     const total = filtered.reduce((s, r) => s + (Number(r.qty) || 0), 0);
     if (filtered.length === 0) return 'Tidak ada pallet keluar ' + range.label + (customer ? ' untuk ' + customer : '') + '.';
     return 'Pallet keluar ' + range.label + (customer ? ' untuk ' + customer : '') + ': ' + fmtNum(total) + ' pcs (' + filtered.length + ' pengiriman).';
-  }
-
-  // OS / kekurangan produksi
-  if (/\bos\b|kekurangan|belum\s*produksi|mendesak|prioritas/.test(qLower)) {
-    const agg = computeAggregates();
-    if (customer) {
-      const row = agg.find((r) => normKey(r.nama) === normKey(customer));
-      if (!row || row.os <= 0) return customer + ' sudah tidak ada kekurangan produksi (lunas atau lebih).';
-      const tgl = nearestTglKirim(row.nama);
-      return 'OS ' + customer + ': kurang ' + fmtNum(row.os) + ' pcs.' + (tgl ? ' Target kirim: ' + fmtDate(tgl) + ' (' + daysUntilLabel(tgl, todayISO()) + ').' : '');
-    }
-    const kurang = agg.filter((r) => r.os > 0);
-    if (kurang.length === 0) return 'Semua customer sudah lunas produksinya, tidak ada kekurangan saat ini.';
-    const withJadwal = kurang.map((r) => Object.assign({}, r, { _tgl: nearestTglKirim(r.nama) }))
-      .sort((a, b) => {
-        if (a._tgl && b._tgl) return a._tgl < b._tgl ? -1 : a._tgl > b._tgl ? 1 : b.os - a.os;
-        if (a._tgl && !b._tgl) return -1;
-        if (!a._tgl && b._tgl) return 1;
-        return b.os - a.os;
-      }).slice(0, 5);
-    const totalOs = kurang.reduce((s, r) => s + r.os, 0);
-    const lines = withJadwal.map((r) => '- ' + r.nama + ': kurang ' + fmtNum(r.os) + ' pcs' + (r._tgl ? ' (' + daysUntilLabel(r._tgl, todayISO()) + ')' : '')).join('\n');
-    return 'Ada ' + kurang.length + ' customer kekurangan produksi, total ' + fmtNum(totalOs) + ' pcs. Paling mendesak:\n\n' + lines;
   }
 
   // Stok palet
