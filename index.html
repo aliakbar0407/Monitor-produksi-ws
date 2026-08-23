@@ -159,6 +159,20 @@ button, input { font-family: inherit; }
 .settings-menu-title { font-weight: 700; font-size: 14px; color: #1E2A4A; }
 .settings-menu-sub { font-size: 11.5px; color: #7A8296; }
 .settings-menu-chevron { font-size: 20px; color: #C7D0E8; flex-shrink: 0; }
+.toggle-row { display: flex; align-items: center; gap: 12px; padding: 4px 2px; }
+.toggle-row-text { flex: 1; min-width: 0; }
+.toggle-row-title { font-weight: 700; font-size: 13.5px; color: #1E2A4A; }
+.toggle-row-sub { font-size: 11.5px; color: #7A8296; margin-top: 2px; }
+.toggle-switch {
+  flex-shrink: 0; width: 46px; height: 27px; border-radius: 999px; border: none;
+  background: #DCE2F0; position: relative; cursor: pointer; padding: 0; transition: background 0.15s;
+}
+.toggle-switch.on { background: #2F8F5B; }
+.toggle-knob {
+  position: absolute; top: 3px; left: 3px; width: 21px; height: 21px; border-radius: 50%;
+  background: #FFFFFF; box-shadow: 0 1px 3px rgba(0,0,0,0.25); transition: transform 0.15s;
+}
+.toggle-switch.on .toggle-knob { transform: translateX(19px); }
 .settings-msg { font-size: 12px; border-radius: 8px; padding: 8px 10px; margin-bottom: 12px; }
 .settings-msg.success { background: #DFF3E6; color: #2F8F5B; }
 .settings-msg.error { background: #FBE4E1; color: #C0392B; }
@@ -594,8 +608,11 @@ const state = {
   activityLogDate: '', // yyyy-mm-dd filter on the real entry date (loggedAt), '' = show all
   aiOpen: false, // whether the AI Assist chat popup is open
   aiMessages: [], // { role: 'user' | 'ai', text } -- in-memory only, resets on reload
+  aiEnabled: (function () {
+    try { return localStorage.getItem('mdpalletindo_ai_enabled') !== '0'; } catch (e) { return true; }
+  })(), // whether the floating AI Assist button is shown at all; persisted per-device
   settingsSection: null, // null = show the compact settings menu list; otherwise one of
-                          // 'truck' | 'baseline' | 'team' | 'profile' | 'password' | 'pin'
+                          // 'truck' | 'baseline' | 'team' | 'profile' | 'password' | 'pin' | 'ai'
   pinModal: null,
   live: false, // true once realtime subscriptions are connected
 };
@@ -1378,11 +1395,32 @@ async function downloadCardAsJpg(cardEl, filename, buttonEl) {
   }
 }
 
+// Small inline SVG illustration of a wooden pallet (top-down slats), used
+// wherever the app needs a "Produksi"/pallet icon -- there's no dedicated
+// pallet emoji in Unicode, so a tiny custom icon gives a clearer picture
+// than the generic factory emoji used before. Fixed wood-tone colors (not
+// currentColor) so it reads consistently like the rest of the emoji icons.
+function palletIconSvg() {
+  return (
+    '<svg viewBox="0 0 24 24" width="1em" height="1em" style="vertical-align:-0.15em;" xmlns="http://www.w3.org/2000/svg">' +
+      '<rect x="1" y="3.5" width="22" height="3.4" rx="0.8" fill="#B87333"/>' +
+      '<rect x="1" y="10.3" width="22" height="3.4" rx="0.8" fill="#C68642"/>' +
+      '<rect x="1" y="17.1" width="22" height="3.4" rx="0.8" fill="#B87333"/>' +
+      '<rect x="2.6" y="3.5" width="2.8" height="17" fill="#7A4B25"/>' +
+      '<rect x="18.6" y="3.5" width="2.8" height="17" fill="#7A4B25"/>' +
+    '</svg>'
+  );
+}
+// Colored exclamation mark used for "OS" (kekurangan produksi) icons --
+// replaces the older warning-triangle glyph with a more distinctly colored
+// heavy exclamation mark.
+const OS_ICON = '&#10071;';
+
 const TABS = [
   { key: 'dashboard', label: 'Dashboard', icon: '&#9776;' },
   { key: 'poin', label: 'PO Masuk', icon: '&#128230;' },
-  { key: 'produksi', label: 'Produksi', icon: '&#127981;' },
-  { key: 'os', label: 'OS', icon: '&#9888;' },
+  { key: 'produksi', label: 'Produksi', icon: palletIconSvg() },
+  { key: 'os', label: 'OS', icon: OS_ICON },
   { key: 'keluar', label: 'Keluar', icon: '&#128666;' },
   { key: 'stok', label: 'Stok', icon: '&#128200;' },
 ];
@@ -1554,7 +1592,7 @@ function renderShell() {
       '<div id="mutasi-overlay" class="review-overlay ' + (state.mutasiOpen ? 'open' : '') + '">' + (state.mutasiOpen ? renderMutasiOverlay() : '') + '</div>' +
       '<div id="activitylog-overlay" class="review-overlay ' + (state.activityLogOpen ? 'open' : '') + '">' + (state.activityLogOpen ? renderActivityLogOverlay() : '') + '</div>' +
       (state.pinModal ? renderPinModal() : '') +
-      '<button type="button" id="ai-fab" class="ai-fab" title="AI Assist">&#10024;</button>' +
+      (state.aiEnabled ? '<button type="button" id="ai-fab" class="ai-fab" title="AI Assist">&#10024;</button>' : '') +
       '<div id="ai-overlay" class="review-overlay ai-overlay ' + (state.aiOpen ? 'open' : '') + '">' + (state.aiOpen ? renderAiOverlay() : '') + '</div>' +
     '</div>'
   );
@@ -1848,7 +1886,7 @@ function renderProduksiTab() {
           '<div class="edit-banner">Sedang mengubah data Produksi <button type="button" id="prod-cancel-edit">Batal</button></div>'
         ) : '') +
         '<div class="card-head">' +
-          '<div class="card-head-icon">&#127981;</div>' +
+          '<div class="card-head-icon">' + palletIconSvg() + '</div>' +
           '<div><div class="card-title">' + (isEdit ? 'Edit Hasil Produksi' : 'Input Hasil Produksi') + '</div><div class="card-subtitle">Pallet jadi yang diproduksi</div></div>' +
         '</div>' +
         '<div class="form-grid">' +
@@ -1977,7 +2015,7 @@ function renderOsTab() {
     '<div class="tab-body">' +
       '<div class="card">' +
         '<div class="card-head">' +
-          '<div class="card-head-icon">&#9888;</div>' +
+          '<div class="card-head-icon">' + OS_ICON + '</div>' +
           '<div><div class="card-title">OS / Kekurangan Produksi</div><div class="card-subtitle">Selisih PO Masuk terhadap hasil produksi</div></div>' +
         '</div>' +
         '<div class="search-wrap"><input id="os-search" class="field-input" placeholder="Cari nama customer..."></div>' +
@@ -2146,13 +2184,13 @@ function renderDashboardTab() {
       '</div>' +
       '<div class="stat-grid">' +
         statCard('stok', 'Stok Palet', fmtNum(totalStok), 'pcs', 'good', '&#128200;', fmtNum(totalBelumWH) + ' pcs belum siap kirim WH') +
-        statCard('os', 'OS Produksi', fmtNum(totalOs), 'pcs', 'danger', '&#9888;', 'belum diproduksi') +
+        statCard('os', 'OS Produksi', fmtNum(totalOs), 'pcs', 'danger', OS_ICON, 'belum diproduksi') +
         statCard('pobelum', 'PO Belum Produksi', fmtNum(kekurangan.length), 'customer', 'warn', '&#128230;', 'menunggu produksi') +
-        statCard('produksi', 'Hasil Produksi', fmtNum(totalProduksi), 'pcs', 'neutral', '&#127981;', fmtNum(produksiHariIni) + ' pcs hari ini') +
+        statCard('produksi', 'Hasil Produksi', fmtNum(totalProduksi), 'pcs', 'neutral', palletIconSvg(), fmtNum(produksiHariIni) + ' pcs hari ini') +
       '</div>' +
 
       '<div class="card">' +
-        '<div class="card-head"><div class="card-head-icon">&#9888;</div><div><div class="card-title">Prioritas Kekurangan Produksi</div><div class="card-subtitle">Diurutkan berdasarkan jadwal kirim paling dekat</div></div></div>' +
+        '<div class="card-head"><div class="card-head-icon">' + OS_ICON + '</div><div><div class="card-title">Prioritas Kekurangan Produksi</div><div class="card-subtitle">Diurutkan berdasarkan jadwal kirim paling dekat</div></div></div>' +
         (topKekurangan.length === 0 ? emptyState('Tidak ada kekurangan produksi saat ini.') : (
           '<div class="record-list">' + topKekurangan.map((r) => (
             '<div class="record-row">' +
@@ -3118,6 +3156,7 @@ function bindDashboardCardEvents() {
 }
 
 const SETTINGS_MENU = [
+  { key: 'ai', icon: '&#10024;', title: 'AI Assist', sub: 'Tampilkan atau sembunyikan tombol AI Assist' },
   { key: 'truck', icon: '&#128666;', title: 'Daftar Nopol Truk', sub: 'Muncul sebagai pilihan cepat di menu Keluar' },
   { key: 'baseline', icon: '&#128203;', title: 'Atur Saldo Awal', sub: 'OS Awal & Stok Awal per customer' },
   { key: 'team', icon: '&#128101;', title: 'Anggota Tim', sub: 'Semua orang yang terdaftar di aplikasi ini' },
@@ -3166,6 +3205,18 @@ function renderSettingsMenuList() {
 function renderSettingsSection(key) {
   const back = '<button type="button" id="settings-back" class="btn-link" style="margin:0 0 10px 2px;">&larr; Kembali ke Pengaturan</button>';
   const sections = {
+    ai: (
+      '<div class="card">' +
+        '<div class="card-head"><div class="card-head-icon">&#10024;</div><div><div class="card-title">AI Assist</div><div class="card-subtitle">Tombol chat pintar untuk tanya data aplikasi</div></div></div>' +
+        '<div class="toggle-row">' +
+          '<div class="toggle-row-text">' +
+            '<div class="toggle-row-title">Tampilkan tombol AI Assist</div>' +
+            '<div class="toggle-row-sub">Jika dimatikan, tombol &#10024; di pojok bawah akan disembunyikan di perangkat ini.</div>' +
+          '</div>' +
+          '<button type="button" id="ai-enabled-toggle" class="toggle-switch ' + (state.aiEnabled ? 'on' : '') + '" role="switch" aria-checked="' + (state.aiEnabled ? 'true' : 'false') + '"><span class="toggle-knob"></span></button>' +
+        '</div>' +
+      '</div>'
+    ),
     truck: (
       '<div class="card">' +
         '<div class="card-head"><div class="card-head-icon">&#128666;</div><div><div class="card-title">Daftar Nopol Truk</div><div class="card-subtitle">Muncul sebagai pilihan cepat di menu Keluar</div></div></div>' +
@@ -3278,6 +3329,16 @@ function bindSettingsEvents() {
   });
   const backBtn = document.getElementById('settings-back');
   if (backBtn) backBtn.addEventListener('click', () => { state.settingsSection = null; render(); });
+
+  const aiToggle = document.getElementById('ai-enabled-toggle');
+  if (aiToggle) {
+    aiToggle.addEventListener('click', () => {
+      state.aiEnabled = !state.aiEnabled;
+      if (!state.aiEnabled) state.aiOpen = false;
+      try { localStorage.setItem('mdpalletindo_ai_enabled', state.aiEnabled ? '1' : '0'); } catch (e) { /* ignore */ }
+      render();
+    });
+  }
 
   loadTeamMembers();
   bindBaselineForm();
