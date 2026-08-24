@@ -173,6 +173,15 @@ button, input { font-family: inherit; }
   background: #FFFFFF; box-shadow: 0 1px 3px rgba(0,0,0,0.25); transition: transform 0.15s;
 }
 .toggle-switch.on .toggle-knob { transform: translateX(19px); }
+.about-card { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 28px 20px; }
+.about-logo { width: 64px; height: auto; margin-bottom: 12px; }
+.about-app-name { font-family: 'Bitter', serif; font-weight: 800; font-size: 17px; color: #1E2A4A; margin-bottom: 16px; }
+.about-row {
+  display: flex; justify-content: space-between; width: 100%; max-width: 240px;
+  padding: 9px 0; border-top: 1px solid #E9EDF7; font-size: 13px;
+}
+.about-row span:first-child { color: #7A8296; }
+.about-row span:last-child { color: #1E2A4A; font-weight: 600; }
 .settings-msg { font-size: 12px; border-radius: 8px; padding: 8px 10px; margin-bottom: 12px; }
 .settings-msg.success { background: #DFF3E6; color: #2F8F5B; }
 .settings-msg.error { background: #FBE4E1; color: #C0392B; }
@@ -1395,26 +1404,44 @@ async function downloadCardAsJpg(cardEl, filename, buttonEl) {
   }
 }
 
-// Small inline SVG illustration of a wooden pallet (top-down slats), used
-// wherever the app needs a "Produksi"/pallet icon -- there's no dedicated
-// pallet emoji in Unicode, so a tiny custom icon gives a clearer picture
-// than the generic factory emoji used before. Fixed wood-tone colors (not
+// Small inline SVG illustration of a STACK of wooden pallets (three side-view
+// pallet units -- deck + two feet -- stacked with gaps), used wherever the
+// app needs a "Produksi"/pallet icon. Fixed wood-tone colors (not
 // currentColor) so it reads consistently like the rest of the emoji icons.
 function palletIconSvg() {
   return (
     '<svg viewBox="0 0 24 24" width="1em" height="1em" style="vertical-align:-0.15em;" xmlns="http://www.w3.org/2000/svg">' +
-      '<rect x="1" y="3.5" width="22" height="3.4" rx="0.8" fill="#B87333"/>' +
-      '<rect x="1" y="10.3" width="22" height="3.4" rx="0.8" fill="#C68642"/>' +
-      '<rect x="1" y="17.1" width="22" height="3.4" rx="0.8" fill="#B87333"/>' +
-      '<rect x="2.6" y="3.5" width="2.8" height="17" fill="#7A4B25"/>' +
-      '<rect x="18.6" y="3.5" width="2.8" height="17" fill="#7A4B25"/>' +
+      // top pallet
+      '<rect x="2" y="1" width="20" height="2.4" rx="0.5" fill="#C68642"/>' +
+      '<rect x="3.2" y="3.4" width="2.6" height="2.2" fill="#7A4B25"/>' +
+      '<rect x="18.2" y="3.4" width="2.6" height="2.2" fill="#7A4B25"/>' +
+      // middle pallet
+      '<rect x="2" y="9.4" width="20" height="2.4" rx="0.5" fill="#B87333"/>' +
+      '<rect x="3.2" y="11.8" width="2.6" height="2.2" fill="#6B4423"/>' +
+      '<rect x="18.2" y="11.8" width="2.6" height="2.2" fill="#6B4423"/>' +
+      // bottom pallet
+      '<rect x="2" y="17.8" width="20" height="2.4" rx="0.5" fill="#C68642"/>' +
+      '<rect x="3.2" y="20.2" width="2.6" height="2.2" fill="#7A4B25"/>' +
+      '<rect x="18.2" y="20.2" width="2.6" height="2.2" fill="#7A4B25"/>' +
     '</svg>'
   );
 }
-// Colored exclamation mark used for "OS" (kekurangan produksi) icons --
-// replaces the older warning-triangle glyph with a more distinctly colored
-// heavy exclamation mark.
-const OS_ICON = '&#10071;';
+// Small inline SVG illustration of a document/checklist with a bold
+// checkmark ("berkas yang dicontreng"), used wherever the app needs an "OS"
+// (order-status / kekurangan produksi) icon.
+function osIconSvg() {
+  return (
+    '<svg viewBox="0 0 24 24" width="1em" height="1em" style="vertical-align:-0.15em;" xmlns="http://www.w3.org/2000/svg">' +
+      '<rect x="4" y="2" width="16" height="20" rx="2.2" fill="#FFFFFF" stroke="#344DA1" stroke-width="1.7"/>' +
+      '<line x1="7" y1="7" x2="17" y2="7" stroke="#DCE2F0" stroke-width="1.6" stroke-linecap="round"/>' +
+      '<line x1="7" y1="11" x2="17" y2="11" stroke="#DCE2F0" stroke-width="1.6" stroke-linecap="round"/>' +
+      '<line x1="7" y1="15" x2="13" y2="15" stroke="#DCE2F0" stroke-width="1.6" stroke-linecap="round"/>' +
+      '<path d="M7 18 L10.2 21.2 L18 12.5" fill="none" stroke="#2F8F5B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>' +
+    '</svg>'
+  );
+}
+// Colored icon used for "OS" (kekurangan produksi) throughout the app.
+const OS_ICON = osIconSvg();
 
 const TABS = [
   { key: 'dashboard', label: 'Dashboard', icon: '&#9776;' },
@@ -3163,6 +3190,7 @@ const SETTINGS_MENU = [
   { key: 'profile', icon: '&#128100;', title: 'Edit Profil', sub: 'Nama dan bagian akun' },
   { key: 'password', icon: '&#128273;', title: 'Ganti Password', sub: 'Password dipakai untuk masuk ke aplikasi' },
   { key: 'pin', icon: '&#128274;', title: 'Ganti PIN Hapus Data', sub: 'PIN dipakai untuk konfirmasi sebelum menghapus data' },
+  { key: 'about', icon: '&#8505;', title: 'Tentang Aplikasi', sub: 'Info versi dan pembuat aplikasi' },
 ];
 
 function renderSettingsOverlay() {
@@ -3279,6 +3307,14 @@ function renderSettingsSection(key) {
           '<div class="field"><label class="field-label">Konfirmasi PIN Baru</label><input id="settings-pin-confirm" type="password" inputmode="numeric" maxlength="6" class="field-input mono" placeholder="&bull;&bull;&bull;&bull;"></div>' +
           '<button type="button" id="pin-save" class="btn-primary">&#10003; Simpan PIN Baru</button>' +
         '</div>' +
+      '</div>'
+    ),
+    about: (
+      '<div class="card about-card">' +
+        '<img src="' + LOGO_DATA_URI + '" alt="Logo" class="about-logo">' +
+        '<div class="about-app-name">Monitoring Produksi WS</div>' +
+        '<div class="about-row"><span>Versi</span><span>1.0</span></div>' +
+        '<div class="about-row"><span>Dibuat oleh</span><span>Ali Akbar</span></div>' +
       '</div>'
     ),
   };
