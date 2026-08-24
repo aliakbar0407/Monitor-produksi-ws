@@ -1405,9 +1405,8 @@ async function downloadCardAsJpg(cardEl, filename, buttonEl) {
 }
 
 // Small inline SVG illustration of a STACK of wooden pallets (three side-view
-// pallet units -- deck + two feet -- stacked with gaps), used wherever the
-// app needs a "Produksi"/pallet icon. Fixed wood-tone colors (not
-// currentColor) so it reads consistently like the rest of the emoji icons.
+// pallet units -- deck + two feet -- stacked with gaps). Kept around in case
+// it's needed elsewhere, but the "Produksi" tab now uses hammerWoodIconSvg().
 function palletIconSvg() {
   return (
     '<svg viewBox="0 0 24 24" width="1em" height="1em" style="vertical-align:-0.15em;" xmlns="http://www.w3.org/2000/svg">' +
@@ -1423,6 +1422,35 @@ function palletIconSvg() {
       '<rect x="2" y="17.8" width="20" height="2.4" rx="0.5" fill="#C68642"/>' +
       '<rect x="3.2" y="20.2" width="2.6" height="2.2" fill="#7A4B25"/>' +
       '<rect x="18.2" y="20.2" width="2.6" height="2.2" fill="#7A4B25"/>' +
+    '</svg>'
+  );
+}
+// Small inline SVG of a green downward arrow, used for the "PO Masuk" tab
+// (incoming orders). Fixed green color (not currentColor) so it reads
+// consistently like the rest of the emoji/illustration icons.
+function poMasukIconSvg() {
+  return (
+    '<svg viewBox="0 0 24 24" width="1em" height="1em" style="vertical-align:-0.15em;" xmlns="http://www.w3.org/2000/svg">' +
+      '<line x1="12" y1="3" x2="12" y2="16.5" stroke="#2F8F5B" stroke-width="2.6" stroke-linecap="round"/>' +
+      '<path d="M5 12.5 L12 19.5 L19 12.5" fill="none" stroke="#2F8F5B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>' +
+    '</svg>'
+  );
+}
+// Small inline SVG of a hammer striking a wood plank ("palu dan kayu"), used
+// for the "Produksi" tab. Fixed wood/metal tone colors (not currentColor)
+// so it reads consistently like the rest of the emoji/illustration icons.
+function hammerWoodIconSvg() {
+  return (
+    '<svg viewBox="0 0 24 24" width="1em" height="1em" style="vertical-align:-0.15em;" xmlns="http://www.w3.org/2000/svg">' +
+      // wood plank
+      '<rect x="2" y="18" width="20" height="4" rx="1" fill="#C68642"/>' +
+      '<rect x="2" y="18" width="20" height="1.3" fill="#DDA15E"/>' +
+      // hammer, angled to strike the plank
+      '<g transform="rotate(-45 12 12)">' +
+        '<rect x="10.7" y="4" width="2.6" height="12" rx="1" fill="#8B5A2B"/>' +
+        '<rect x="8" y="1" width="8" height="4.5" rx="1" fill="#5B6472"/>' +
+        '<rect x="8" y="1" width="8" height="1.4" fill="#78828F"/>' +
+      '</g>' +
     '</svg>'
   );
 }
@@ -1445,8 +1473,8 @@ const OS_ICON = osIconSvg();
 
 const TABS = [
   { key: 'dashboard', label: 'Dashboard', icon: '&#9776;' },
-  { key: 'poin', label: 'PO Masuk', icon: '&#128230;' },
-  { key: 'produksi', label: 'Produksi', icon: palletIconSvg() },
+  { key: 'poin', label: 'PO Masuk', icon: poMasukIconSvg() },
+  { key: 'produksi', label: 'Produksi', icon: hammerWoodIconSvg() },
   { key: 'os', label: 'OS', icon: OS_ICON },
   { key: 'keluar', label: 'Keluar', icon: '&#128666;' },
   { key: 'stok', label: 'Stok', icon: '&#128200;' },
