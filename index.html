@@ -1431,8 +1431,8 @@ function palletIconSvg() {
 function poMasukIconSvg() {
   return (
     '<svg viewBox="0 0 24 24" width="1em" height="1em" style="vertical-align:-0.15em;" xmlns="http://www.w3.org/2000/svg">' +
-      '<line x1="12" y1="3" x2="12" y2="16.5" stroke="#2F8F5B" stroke-width="2.6" stroke-linecap="round"/>' +
-      '<path d="M5 12.5 L12 19.5 L19 12.5" fill="none" stroke="#2F8F5B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '<line x1="12" y1="2.5" x2="12" y2="15.5" stroke="#2F8F5B" stroke-width="3.6" stroke-linecap="round"/>' +
+      '<path d="M3.8 10.5 L12 20 L20.2 10.5" fill="none" stroke="#2F8F5B" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/>' +
     '</svg>'
   );
 }
@@ -1443,13 +1443,13 @@ function hammerWoodIconSvg() {
   return (
     '<svg viewBox="0 0 24 24" width="1em" height="1em" style="vertical-align:-0.15em;" xmlns="http://www.w3.org/2000/svg">' +
       // wood plank
-      '<rect x="2" y="18" width="20" height="4" rx="1" fill="#C68642"/>' +
-      '<rect x="2" y="18" width="20" height="1.3" fill="#DDA15E"/>' +
-      // hammer, angled to strike the plank
-      '<g transform="rotate(-45 12 12)">' +
-        '<rect x="10.7" y="4" width="2.6" height="12" rx="1" fill="#8B5A2B"/>' +
-        '<rect x="8" y="1" width="8" height="4.5" rx="1" fill="#5B6472"/>' +
-        '<rect x="8" y="1" width="8" height="1.4" fill="#78828F"/>' +
+      '<rect x="1" y="17" width="22" height="5.5" rx="1.2" fill="#C68642"/>' +
+      '<rect x="1" y="17" width="22" height="1.8" fill="#DDA15E"/>' +
+      // hammer, angled to strike the plank, sized to fill the canvas
+      '<g transform="rotate(-45 12 11)">' +
+        '<rect x="10.2" y="1.5" width="3.6" height="14.5" rx="1.2" fill="#8B5A2B"/>' +
+        '<rect x="6" y="-2" width="12" height="7" rx="1.3" fill="#5B6472"/>' +
+        '<rect x="6" y="-2" width="12" height="2.2" fill="#78828F"/>' +
       '</g>' +
     '</svg>'
   );
@@ -1885,7 +1885,7 @@ function renderPoInTab() {
           '<div class="edit-banner">Sedang mengubah data PO Masuk <button type="button" id="poin-cancel-edit">Batal</button></div>'
         ) : '') +
         '<div class="card-head">' +
-          '<div class="card-head-icon">&#128230;</div>' +
+          '<div class="card-head-icon">' + poMasukIconSvg() + '</div>' +
           '<div><div class="card-title">' + (isEdit ? 'Edit PO Masuk' : 'Input PO Masuk') + '</div><div class="card-subtitle">Pesanan pallet dari customer</div></div>' +
         '</div>' +
         '<div class="form-grid">' +
@@ -1941,7 +1941,7 @@ function renderProduksiTab() {
           '<div class="edit-banner">Sedang mengubah data Produksi <button type="button" id="prod-cancel-edit">Batal</button></div>'
         ) : '') +
         '<div class="card-head">' +
-          '<div class="card-head-icon">' + palletIconSvg() + '</div>' +
+          '<div class="card-head-icon">' + hammerWoodIconSvg() + '</div>' +
           '<div><div class="card-title">' + (isEdit ? 'Edit Hasil Produksi' : 'Input Hasil Produksi') + '</div><div class="card-subtitle">Pallet jadi yang diproduksi</div></div>' +
         '</div>' +
         '<div class="form-grid">' +
@@ -2241,7 +2241,7 @@ function renderDashboardTab() {
         statCard('stok', 'Stok Palet', fmtNum(totalStok), 'pcs', 'good', '&#128200;', fmtNum(totalBelumWH) + ' pcs belum siap kirim WH') +
         statCard('os', 'OS Produksi', fmtNum(totalOs), 'pcs', 'danger', OS_ICON, 'belum diproduksi') +
         statCard('pobelum', 'PO Belum Produksi', fmtNum(kekurangan.length), 'customer', 'warn', '&#128230;', 'menunggu produksi') +
-        statCard('produksi', 'Hasil Produksi', fmtNum(totalProduksi), 'pcs', 'neutral', palletIconSvg(), fmtNum(produksiHariIni) + ' pcs hari ini') +
+        statCard('produksi', 'Hasil Produksi', fmtNum(totalProduksi), 'pcs', 'neutral', hammerWoodIconSvg(), fmtNum(produksiHariIni) + ' pcs hari ini') +
       '</div>' +
 
       '<div class="card">' +
