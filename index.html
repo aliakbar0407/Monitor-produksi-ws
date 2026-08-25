@@ -2160,15 +2160,15 @@ function renderStokList(rows, q) {
   const filtered = rows.filter((r) => r.nama.toLowerCase().indexOf(q.toLowerCase()) !== -1);
   if (filtered.length === 0) return emptyState('Belum ada data produksi atau pengiriman.');
   return '<div class="record-list">' + filtered.map((r) => {
-    const max = Math.max(r.produksi, 1);
-    const pct = Math.max(0, Math.min(100, (r.stok / max) * 100));
+    const max = Math.max(r.stok, 1);
+    const pct = Math.max(0, Math.min(100, (r.siapWH / max) * 100));
     return (
       '<div class="record-row stok-row">' +
         '<div class="record-row-top">' +
           '<div class="record-main">' +
             '<div class="record-name">' + esc(r.nama) + '</div>' +
             '<div class="record-meta">' + esc(r.ukuran || '-') + '</div>' +
-            '<div class="gauge-track"><div class="gauge-fill ' + (r.stok <= 0 ? 'danger' : 'good') + '" style="width:' + pct + '%;"></div></div>' +
+            '<div class="gauge-track"><div class="gauge-fill ' + (r.siapWH <= 0 ? 'danger' : 'good') + '" style="width:' + pct + '%;"></div></div>' +
             '<div class="record-meta small">Produksi ' + fmtNum(r.produksi) + ' &middot; Keluar ' + fmtNum(r.keluar) + '</div>' +
           '</div>' +
           '<div class="record-qty ' + (r.stok <= 0 ? 'danger' : 'good') + '">' + fmtNum(r.stok) + '<span>stok</span></div>' +
