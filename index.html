@@ -1243,15 +1243,20 @@ function computeSubcontReport(from, to) {
   });
 
   // Resume per supplier: how much each subcont supplier delivered in total,
-  // and to how many distinct customers.
+  // to how many distinct customers, and jumlah pengiriman -- dihitung dari
+  // jumlah tanggal pengiriman (tanggal) yang berbeda dalam periode tsb (kalau
+  // dalam satu tanggal supplier mengirim ke beberapa customer sekaligus, itu
+  // tetap dihitung 1 kali pengiriman).
   const supplierMap = {};
-  rows.forEach((r) => {
-    if (!supplierMap[r.subcontNama]) supplierMap[r.subcontNama] = { subcontNama: r.subcontNama, qty: 0, customers: new Set() };
-    supplierMap[r.subcontNama].qty += r.qty;
-    supplierMap[r.subcontNama].customers.add(r.nama);
+  filtered.forEach((r) => {
+    const subcontNama = r.subcontNama || '(Tanpa nama subcont)';
+    if (!supplierMap[subcontNama]) supplierMap[subcontNama] = { subcontNama, qty: 0, customers: new Set(), tanggalPengiriman: new Set() };
+    supplierMap[subcontNama].qty += Number(r.qty) || 0;
+    supplierMap[subcontNama].customers.add(r.nama);
+    supplierMap[subcontNama].tanggalPengiriman.add(r.tanggal);
   });
   const bySupplier = Object.values(supplierMap)
-    .map((s) => ({ subcontNama: s.subcontNama, qty: s.qty, jumlahCustomer: s.customers.size }))
+    .map((s) => ({ subcontNama: s.subcontNama, qty: s.qty, jumlahCustomer: s.customers.size, jumlahPengiriman: s.tanggalPengiriman.size }))
     .sort((a, b) => b.qty - a.qty);
 
   const totalQty = rows.reduce((s, r) => s + r.qty, 0);
@@ -2447,12 +2452,12 @@ function renderSubcontReportBody() {
       '<div class="report-resume-box good"><div class="report-resume-value">' + fmtNum(d.totalQty) + '</div><div class="report-resume-label">Total Pallet Subcont</div></div>' +
     '</div>' +
     '<div class="report-note">Resume Per Supplier</div>' +
-    '<table class="report-table"><thead><tr><th>Nama Subcont / Supplier</th><th class="num">Jml Customer</th><th class="num">Total Qty</th></tr></thead><tbody>' +
+    '<table class="report-table"><thead><tr><th>Nama Subcont / Supplier</th><th class="num">Jml Customer</th><th class="num">Jml Pengiriman</th><th class="num">Total Qty</th></tr></thead><tbody>' +
       (d.bySupplier.length ? d.bySupplier.map((s) => (
-        '<tr><td>' + esc(s.subcontNama) + '</td><td class="num qty">' + fmtNum(s.jumlahCustomer) + '</td><td class="num qty">' + fmtNum(s.qty) + '</td></tr>'
-      )).join('') : '<tr><td colspan="3" style="text-align:center;color:#9AA3BE;padding:16px;">Tidak ada pallet subcont pada periode ini.</td></tr>') +
+        '<tr><td>' + esc(s.subcontNama) + '</td><td class="num qty">' + fmtNum(s.jumlahCustomer) + '</td><td class="num qty">' + fmtNum(s.jumlahPengiriman) + '</td><td class="num qty">' + fmtNum(s.qty) + '</td></tr>'
+      )).join('') : '<tr><td colspan="4" style="text-align:center;color:#9AA3BE;padding:16px;">Tidak ada pallet subcont pada periode ini.</td></tr>') +
     '</tbody>' +
-    (d.bySupplier.length ? '<tfoot><tr class="report-total-row"><td>TOTAL</td><td class="num">-</td><td class="num">' + fmtNum(d.totalQty) + '</td></tr></tfoot>' : '') +
+    (d.bySupplier.length ? '<tfoot><tr class="report-total-row"><td>TOTAL</td><td class="num">-</td><td class="num">-</td><td class="num">' + fmtNum(d.totalQty) + '</td></tr></tfoot>' : '') +
     '</table>' +
     '<div class="report-note" style="margin-top:14px;">Rincian Per Customer &amp; Supplier</div>' +
     '<table class="report-table"><thead><tr><th>Nama Customer</th><th>Ukuran</th><th>Subcont</th><th class="num">Qty</th></tr></thead><tbody>' +
