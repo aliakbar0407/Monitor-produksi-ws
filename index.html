@@ -932,13 +932,21 @@ function doLogout() {
 // still caught even if local realtime sync hasn't landed yet. Fails "open"
 // (returns null, i.e. allows the save) on a network/query error, so a
 // connectivity hiccup never blocks legitimate work.
-async function findDuplicateOnServer(table, tanggal, nama, qty, excludeId) {
+// noPo is optional (only relevant for po_masuk). When provided, a row is only
+// considered a duplicate if its no_po also matches (case/whitespace-insensitive,
+// empty treated as empty) -- so the same customer+tanggal+qty combo can be
+// input again as long as the nomor PO is different. When noPo is left
+// undefined (produksi, pallet_keluar), behavior is unchanged.
+async function findDuplicateOnServer(table, tanggal, nama, qty, excludeId, noPo) {
   try {
-    const { data, error } = await sb.from(table).select('id, nama, tanggal, qty, created_by, logged_at')
+    const cols = 'id, nama, tanggal, qty, created_by, logged_at' + (noPo !== undefined ? ', no_po' : '');
+    const { data, error } = await sb.from(table).select(cols)
       .eq('tanggal', tanggal).eq('qty', Number(qty) || 0);
     if (error || !data) return null;
     const key = normKey(nama);
-    return data.find((r) => normKey(r.nama) === key && r.id !== excludeId) || null;
+    const poKey = noPo !== undefined ? normKey(noPo || '') : null;
+    return data.find((r) => normKey(r.nama) === key && r.id !== excludeId &&
+      (noPo === undefined || normKey(r.no_po || '') === poKey)) || null;
   } catch (e) {
     return null;
   }
@@ -947,8 +955,9 @@ async function findDuplicateOnServer(table, tanggal, nama, qty, excludeId) {
 function duplicateWarningMessage(dup, nama, tanggal, qty) {
   return (
     'Data ini sepertinya sudah pernah diinput' + (dup.created_by ? ' oleh ' + dup.created_by : '') + (dup.logged_at ? ' pada ' + fmtDateTime(dup.logged_at) : '') + '.\n\n' +
-    'Customer: ' + nama + '\nTanggal: ' + fmtDate(tanggal) + '\nQty: ' + fmtNum(qty) + '\n\n' +
-    'Input ini dibatalkan supaya data tidak double. Jika ini memang transaksi lain, ubah salah satu nilai (misalnya qty atau catatan) lalu simpan lagi.'
+    'Customer: ' + nama + '\nTanggal: ' + fmtDate(tanggal) + '\nQty: ' + fmtNum(qty) +
+    (dup.no_po !== undefined ? '\nNomor PO: ' + (dup.no_po || '-') : '') + '\n\n' +
+    'Input ini dibatalkan supaya data tidak double. Jika ini memang transaksi lain, ubah salah satu nilai (misalnya qty, catatan, atau nomor PO) lalu simpan lagi.'
   );
 }
 
@@ -956,7 +965,7 @@ async function addPoIn(record) {
   const btn = document.getElementById('poin-submit');
   const original = btn ? btn.innerHTML : '';
   if (btn) { btn.disabled = true; btn.innerHTML = 'Memeriksa data...'; }
-  const dup = await findDuplicateOnServer('po_masuk', record.tanggal, record.nama, record.qty);
+  const dup = await findDuplicateOnServer('po_masuk', record.tanggal, record.nama, record.qty, undefined, record.noPo);
   if (dup) {
     if (btn) { btn.disabled = false; btn.innerHTML = original; }
     alert(duplicateWarningMessage(dup, record.nama, record.tanggal, record.qty));
