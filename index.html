@@ -257,12 +257,12 @@ button, .card, .stat-card, .record-row, .field-input, .tab-btn { transition: tra
 .date-filter-controls { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
 .date-filter-controls .field-input { flex: 1; }
 .date-filter-clear { white-space: nowrap; padding: 8px 10px; font-size: 12px; }
-.sumber-filter-row { display: flex; gap: 6px; margin: 0 2px 10px; flex-wrap: wrap; }
+.sumber-filter-row { display: flex; gap: 7px; margin: 0 2px 10px; flex-wrap: wrap; }
 .sumber-filter-btn {
-  border: 1.5px solid #DCE2F0; background: #FFFFFF; border-radius: 8px; padding: 6px 10px;
-  font-size: 12px; font-weight: 600; color: #4A5578; cursor: pointer; font-family: inherit;
+  border: none; background: #E7ECF8; border-radius: var(--r-pill); padding: 7px 13px;
+  font-size: 12px; font-weight: 600; color: #344DA1; cursor: pointer; font-family: inherit;
 }
-.sumber-filter-btn.active { background: #344DA1; border-color: #344DA1; color: #FFFFFF; }
+.sumber-filter-btn.active { background: #344DA1; color: #FFFFFF; box-shadow: 0 6px 14px -7px rgba(52,77,161,0.6); }
 .record-list { display: flex; flex-direction: column; gap: 9px; }
 .record-row { background: #FFFFFF; border: var(--border-soft); border-radius: var(--r-md); padding: 13px 14px; display: flex; align-items: center; gap: 10px; box-shadow: var(--shadow-card); }
 .record-main { flex: 1; min-width: 0; }
@@ -329,11 +329,42 @@ button, .card, .stat-card, .record-row, .field-input, .tab-btn { transition: tra
 .stat-pill.good { background: #DFF3E6; color: #2F8F5B; }
 .stat-pill-clickable { border: 1.5px solid transparent; cursor: pointer; font-family: inherit; }
 .stat-pill-clickable:active { filter: brightness(0.95); }
-.stat-pill-clickable.active { border-color: currentColor; box-shadow: 0 0 0 1px currentColor inset; }
+.stat-pill-clickable.active { color: #FFFFFF; box-shadow: 0 6px 14px -7px rgba(30,42,74,0.35); }
+.stat-pill-clickable.danger.active { background: #C0392B; }
+.stat-pill-clickable.good.active { background: #2F8F5B; }
+.stat-pill-clickable:not(.danger):not(.good).active { background: #344DA1; }
 .gauge-track { height: 7px; border-radius: var(--r-pill); background: #E7ECF8; margin-top: 8px; overflow: hidden; }
 .gauge-fill { height: 100%; border-radius: var(--r-pill); transition: width 0.3s ease; }
 .gauge-fill.good { background: linear-gradient(90deg, #3B9F6E, #2F8F5B); }
 .gauge-fill.danger { background: linear-gradient(90deg, #D9503F, #C0392B); }
+
+/* ---------- Circular progress ring ---------- */
+.ring-wrap { border-radius: 50%; position: relative; flex-shrink: 0; }
+.ring-inner {
+  position: absolute; background: #FFFFFF; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: inset 0 0 0 1px rgba(30,42,74,0.05);
+}
+.ring-label { font-family: 'JetBrains Mono', monospace; font-weight: 800; color: #1E2A4A; line-height: 1; }
+
+/* ---------- Dashboard hero (floating card under header) ---------- */
+.dashboard-hero {
+  background: #FFFFFF; border-radius: var(--r-lg); padding: 18px;
+  margin-top: -30px; position: relative; z-index: 2; box-shadow: var(--shadow-float);
+}
+.dashboard-hero-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.dashboard-hero-stats { display: flex; align-items: stretch; gap: 10px; margin-top: 18px; }
+.dashboard-hero-stat { flex: 1; min-width: 0; }
+.dashboard-hero-stat-label { font-size: 11px; color: #7A8296; font-weight: 600; }
+.dashboard-hero-stat-value { font-family: 'JetBrains Mono', monospace; font-weight: 800; font-size: 27px; color: #1E2A4A; margin-top: 3px; line-height: 1.1; }
+.dashboard-hero-stat-value span { font-size: 11px; color: #9AA3BE; font-weight: 600; text-transform: uppercase; margin-left: 4px; }
+.dashboard-hero-accent {
+  background: linear-gradient(135deg, #E36928, #F0924F); border-radius: var(--r-sm); padding: 11px 14px;
+  color: #FFFFFF; display: flex; flex-direction: column; justify-content: center; min-width: 138px;
+  box-shadow: 0 8px 18px -8px rgba(227,105,40,0.55);
+}
+.dashboard-hero-accent-label { font-size: 10px; opacity: 0.92; font-weight: 700; text-transform: uppercase; letter-spacing: 0.02em; }
+.dashboard-hero-accent-value { font-family: 'JetBrains Mono', monospace; font-weight: 800; font-size: 17px; margin-top: 3px; }
 
 /* ---------- Stok: siap kirim WH ---------- */
 .record-row.stok-row { flex-direction: column; align-items: stretch; gap: 10px; }
@@ -2181,10 +2212,10 @@ function renderOsList(rows, q) {
     const pct = Math.max(0, Math.min(100, r.poBulan ? (totalProduksi / Math.max(r.poBulan, 1)) * 100 : 0));
     return (
       '<div class="record-row">' +
+        ringProgress(pct, 40, r.os > 0 ? '#C0392B' : '#2F8F5B') +
         '<div class="record-main">' +
           '<div class="record-name">' + esc(r.nama) + '</div>' +
           '<div class="record-meta">' + esc(r.ukuran || '-') + '</div>' +
-          '<div class="gauge-track"><div class="gauge-fill ' + (r.os > 0 ? 'danger' : 'good') + '" style="width:' + pct + '%;"></div></div>' +
           '<div class="record-meta small">PO ' + fmtNum(r.poBulan) + ' &middot; Produksi ' + fmtNum(r.produksiBulan) + (r.subcontBulan > 0 ? ' &middot; Subcont ' + fmtNum(r.subcontBulan) : '') + '</div>' +
         '</div>' +
         '<div class="record-qty ' + (r.os > 0 ? 'danger' : 'good') + '">' + (r.os > 0 ? '-' : '+') + fmtNum(Math.abs(r.os)) + '<span>' + (r.os > 0 ? 'kurang' : 'lebih') + '</span></div>' +
@@ -2252,10 +2283,10 @@ function renderStokList(rows, q) {
     return (
       '<div class="record-row stok-row">' +
         '<div class="record-row-top">' +
+          ringProgress(pct, 40, r.siapWH <= 0 ? '#C0392B' : '#2F8F5B') +
           '<div class="record-main">' +
             '<div class="record-name">' + esc(r.nama) + '</div>' +
             '<div class="record-meta">' + esc(r.ukuran || '-') + '</div>' +
-            '<div class="gauge-track"><div class="gauge-fill ' + (r.siapWH <= 0 ? 'danger' : 'good') + '" style="width:' + pct + '%;"></div></div>' +
             '<div class="record-meta small">Produksi ' + fmtNum(r.produksi) + ' &middot; Keluar ' + fmtNum(r.keluar) + '</div>' +
           '</div>' +
           '<div class="record-qty ' + (r.stok <= 0 ? 'danger' : 'good') + '">' + fmtNum(r.stok) + '<span>stok</span></div>' +
@@ -2321,11 +2352,29 @@ function renderDashboardTab() {
   // so the newest thing anyone did always shows first, with a real clock time.
   const recent = buildActivityFeed().slice(0, 6);
 
+  const totalSiapWH = agg.reduce((s, r) => s + r.siapWH, 0);
+  const siapPct = totalStok > 0 ? (totalSiapWH / totalStok) * 100 : 0;
+
   return (
     '<div class="tab-body">' +
-      '<div class="dashboard-greeting">' +
-        '<div class="dashboard-greeting-main">' + greetingLabel() + (state.account && state.account.nama ? ', ' + esc(state.account.nama) : '') + '</div>' +
-        '<div class="dashboard-greeting-sub">Hari ini ' + fullDateLabelToday() + '</div>' +
+      '<div class="dashboard-hero">' +
+        '<div class="dashboard-hero-top">' +
+          '<div>' +
+            '<div class="dashboard-greeting-main">' + greetingLabel() + (state.account && state.account.nama ? ', ' + esc(state.account.nama) : '') + '</div>' +
+            '<div class="dashboard-greeting-sub">Hari ini ' + fullDateLabelToday() + '</div>' +
+          '</div>' +
+          ringProgress(siapPct, 58, '#2F8F5B') +
+        '</div>' +
+        '<div class="dashboard-hero-stats">' +
+          '<div class="dashboard-hero-stat">' +
+            '<div class="dashboard-hero-stat-label">Total Stok Palet</div>' +
+            '<div class="dashboard-hero-stat-value">' + fmtNum(totalStok) + '<span>pcs</span></div>' +
+          '</div>' +
+          '<div class="dashboard-hero-accent">' +
+            '<div class="dashboard-hero-accent-label">Belum Siap Kirim WH</div>' +
+            '<div class="dashboard-hero-accent-value">' + fmtNum(totalBelumWH) + ' pcs</div>' +
+          '</div>' +
+        '</div>' +
       '</div>' +
       '<div class="stat-grid">' +
         statCard('stok', 'Stok Palet', fmtNum(totalStok), 'pcs', 'good', '&#128200;', fmtNum(totalBelumWH) + ' pcs belum siap kirim WH') +
@@ -2381,6 +2430,21 @@ function statCard(dashKey, label, value, unit, tone, icon, sub) {
       '<div class="stat-card-value">' + value + '<span>' + esc(unit) + '</span></div>' +
       '<div class="stat-card-sub">' + esc(sub) + '</div>' +
     '</button>'
+  );
+}
+
+// Circular percentage ring (donut) built from a conic-gradient -- size in px,
+// color is a CSS color for the filled arc, track is the unfilled portion.
+function ringProgress(pct, size, color, track) {
+  const p = Math.max(0, Math.min(100, Math.round(pct)));
+  const thickness = Math.max(4, Math.round(size * 0.12));
+  const fontSize = Math.max(10, Math.round(size * 0.24));
+  return (
+    '<div class="ring-wrap" style="width:' + size + 'px;height:' + size + 'px;background:conic-gradient(' + color + ' ' + (p * 3.6) + 'deg,' + (track || '#E7ECF8') + ' 0);">' +
+      '<div class="ring-inner" style="inset:' + thickness + 'px;">' +
+        '<span class="ring-label" style="font-size:' + fontSize + 'px;">' + p + '%</span>' +
+      '</div>' +
+    '</div>'
   );
 }
 
