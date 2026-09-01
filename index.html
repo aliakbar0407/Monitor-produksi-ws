@@ -353,18 +353,14 @@ button, .card, .stat-card, .record-row, .field-input, .tab-btn { transition: tra
   margin-top: -30px; position: relative; z-index: 2; box-shadow: var(--shadow-float);
 }
 .dashboard-hero-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.dashboard-hero-stats { display: flex; align-items: stretch; gap: 10px; margin-top: 18px; }
+.dashboard-hero-stats { display: flex; align-items: stretch; gap: 8px; margin-top: 18px; }
 .dashboard-hero-stat { flex: 1; min-width: 0; }
-.dashboard-hero-stat-label { font-size: 11px; color: #7A8296; font-weight: 600; }
-.dashboard-hero-stat-value { font-family: 'JetBrains Mono', monospace; font-weight: 800; font-size: 27px; color: #1E2A4A; margin-top: 3px; line-height: 1.1; }
-.dashboard-hero-stat-value span { font-size: 11px; color: #9AA3BE; font-weight: 600; text-transform: uppercase; margin-left: 4px; }
-.dashboard-hero-accent {
-  background: linear-gradient(135deg, #E36928, #F0924F); border-radius: var(--r-sm); padding: 11px 14px;
-  color: #FFFFFF; display: flex; flex-direction: column; justify-content: center; min-width: 138px;
-  box-shadow: 0 8px 18px -8px rgba(227,105,40,0.55);
-}
-.dashboard-hero-accent-label { font-size: 10px; opacity: 0.92; font-weight: 700; text-transform: uppercase; letter-spacing: 0.02em; }
-.dashboard-hero-accent-value { font-family: 'JetBrains Mono', monospace; font-weight: 800; font-size: 17px; margin-top: 3px; }
+.dashboard-hero-stat-label { font-size: 10.5px; color: #7A8296; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dashboard-hero-stat-value { font-family: 'JetBrains Mono', monospace; font-weight: 800; font-size: 23px; color: #1E2A4A; margin-top: 3px; line-height: 1.1; }
+.dashboard-hero-stat-value span { font-size: 10px; color: #9AA3BE; font-weight: 600; text-transform: uppercase; margin-left: 3px; }
+.dashboard-hero-stat-accent .dashboard-hero-stat-label { color: #C4551C; }
+.dashboard-hero-stat-accent .dashboard-hero-stat-value { color: #E36928; }
+.dashboard-hero-stat-accent .dashboard-hero-stat-value span { color: #E39A6C; }
 
 /* ---------- Stok: siap kirim WH ---------- */
 .record-row.stok-row { flex-direction: column; align-items: stretch; gap: 10px; }
@@ -1378,7 +1374,7 @@ function computeOsReport(to) {
       if (r.tanggal >= monthStart) map[k].produksiBulan += qty; else map[k].produksiSebelum += qty;
     }
   });
-  const rows = Object.values(map).map((it) => {
+  const allRows = Object.values(map).map((it) => {
     const key = normKey(it.nama);
     const osAwalKey = Object.keys(OS_AWAL).find((k) => normKey(k) === key);
     const osAwalStatic = osAwalKey ? OS_AWAL[osAwalKey] : 0;
@@ -1389,15 +1385,17 @@ function computeOsReport(to) {
       osAwal, po, produksi: it.produksiBulan, subcont: it.subcontBulan,
       os: osAwal + it.poBulan - it.produksiBulan - it.subcontBulan,
     });
-  })
-    // Resume OS Produksi only lists customers still owed production (os > 0).
-    // Customers already fully covered (os === 0) or over-produced (os < 0)
-    // are considered settled and are left out of this resume.
-    .filter((r) => r.os > 0)
-    .sort((a, b) => a.nama.localeCompare(b.nama));
-  const totalPo = rows.reduce((s, r) => s + r.po, 0);
-  const totalProduksiSubcont = rows.reduce((s, r) => s + r.produksi + r.subcont, 0);
-  const totalKurang = rows.reduce((s, r) => s + r.os, 0);
+  });
+  // Resume OS Produksi only *lists* customers still owed production (os > 0)
+  // -- customers already fully covered (os === 0) or over-produced (os < 0)
+  // are considered settled and are left off the table. But the three totals
+  // above the table (PO In / Produksi+Subcont / Kekurangan) must all come
+  // from the same full population (allRows) so they stay arithmetically
+  // consistent: Total PO In - Total Produksi+Subcont = Total Kekurangan.
+  const rows = allRows.filter((r) => r.os > 0).sort((a, b) => a.nama.localeCompare(b.nama));
+  const totalPo = allRows.reduce((s, r) => s + r.po, 0);
+  const totalProduksiSubcont = allRows.reduce((s, r) => s + r.produksi + r.subcont, 0);
+  const totalKurang = allRows.reduce((s, r) => s + r.os, 0);
   return { rows, totalPo, totalProduksiSubcont, totalKurang, itemKurang: rows.length };
 }
 
@@ -2312,9 +2310,14 @@ function renderWhRow(r) {
 
 // ---------------- Dashboard ----------------
 function nearestTglKirim(nama) {
+  // Consistent with the monthly OS reset: PO records from before this month
+  // are already folded into the carried-over baseline (their individual
+  // delivery dates are stale/settled), so only this month's PO entries are
+  // considered "live" targets for prioritization.
+  const monthStart = firstDayOfMonthISO();
   let nearest = null;
   state.poIn.forEach((r) => {
-    if (r.nama !== nama || !r.tglKirim) return;
+    if (r.nama !== nama || !r.tglKirim || r.tanggal < monthStart) return;
     if (nearest === null || r.tglKirim < nearest) nearest = r.tglKirim;
   });
   return nearest;
@@ -2367,12 +2370,16 @@ function renderDashboardTab() {
         '</div>' +
         '<div class="dashboard-hero-stats">' +
           '<div class="dashboard-hero-stat">' +
+            '<div class="dashboard-hero-stat-label">Produksi Hari Ini</div>' +
+            '<div class="dashboard-hero-stat-value">' + fmtNum(produksiHariIni) + '<span>pcs</span></div>' +
+          '</div>' +
+          '<div class="dashboard-hero-stat">' +
             '<div class="dashboard-hero-stat-label">Total Stok Palet</div>' +
             '<div class="dashboard-hero-stat-value">' + fmtNum(totalStok) + '<span>pcs</span></div>' +
           '</div>' +
-          '<div class="dashboard-hero-accent">' +
-            '<div class="dashboard-hero-accent-label">Belum Siap Kirim WH</div>' +
-            '<div class="dashboard-hero-accent-value">' + fmtNum(totalBelumWH) + ' pcs</div>' +
+          '<div class="dashboard-hero-stat dashboard-hero-stat-accent">' +
+            '<div class="dashboard-hero-stat-label">Belum Siap Kirim WH</div>' +
+            '<div class="dashboard-hero-stat-value">' + fmtNum(totalBelumWH) + '<span>pcs</span></div>' +
           '</div>' +
         '</div>' +
       '</div>' +
