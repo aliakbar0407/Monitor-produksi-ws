@@ -1152,25 +1152,49 @@ async function changePin(oldPin, newPin, confirmPin) {
 function normKey(s) { return (s || '').toString().trim().replace(/\s+/g, ' ').toLowerCase(); }
 
 function computeAggregates() {
+  // OS Produksi resets its PO/Produksi/Subcont breakdown every tanggal 1 --
+  // whatever OS (kekurangan/kelebihan) is left at the end of the previous
+  // month automatically becomes the starting "PO" baseline for the new
+  // month, so the OS total itself carries through unchanged while the
+  // displayed PO/Produksi/Subcont go back to 0 for the new month. New PO
+  // entered during the month simply adds on top of that baseline.
+  const monthStart = firstDayOfMonthISO();
   const map = {};
   const touch = (nama, ukuran) => {
     const key = normKey(nama);
     if (!key) return null;
-    if (!map[key]) map[key] = { nama, ukuran: ukuran || CUSTOMER_MAP[nama] || '', po: 0, produksi: 0, subcont: 0, keluar: 0 };
+    if (!map[key]) map[key] = {
+      nama, ukuran: ukuran || CUSTOMER_MAP[nama] || '',
+      po: 0, produksi: 0, subcont: 0, keluar: 0,
+      poBulan: 0, produksiBulan: 0, subcontBulan: 0,
+      poSebelum: 0, produksiSebelum: 0, subcontSebelum: 0,
+    };
     else if (ukuran && !map[key].ukuran) map[key].ukuran = ukuran;
     return key;
   };
   Object.keys(OS_AWAL).forEach((nama) => touch(nama, ''));
   Object.keys(STOK_AWAL).forEach((nama) => touch(nama, ''));
-  state.poIn.forEach((r) => { const k = touch(r.nama, r.ukuran); if (k) map[k].po += Number(r.qty) || 0; });
+  state.poIn.forEach((r) => {
+    const k = touch(r.nama, r.ukuran);
+    if (!k) return;
+    const qty = Number(r.qty) || 0;
+    map[k].po += qty;
+    if (r.tanggal >= monthStart) map[k].poBulan += qty; else map[k].poSebelum += qty;
+  });
   // Subcont pallets (bought from a subcontractor) are shipped directly to the
   // customer/WH and never pass through our own production or WS stock -- they
   // only reduce OS. Regular ("sendiri") production is what feeds stok/WS.
   state.produksi.forEach((r) => {
     const k = touch(r.nama, r.ukuran);
     if (!k) return;
-    if (r.sumber === 'subcont') map[k].subcont += Number(r.qty) || 0;
-    else map[k].produksi += Number(r.qty) || 0;
+    const qty = Number(r.qty) || 0;
+    if (r.sumber === 'subcont') {
+      map[k].subcont += qty;
+      if (r.tanggal >= monthStart) map[k].subcontBulan += qty; else map[k].subcontSebelum += qty;
+    } else {
+      map[k].produksi += qty;
+      if (r.tanggal >= monthStart) map[k].produksiBulan += qty; else map[k].produksiSebelum += qty;
+    }
   });
   state.keluar.forEach((r) => { const k = touch(r.nama, r.ukuran); if (k) map[k].keluar += Number(r.qty) || 0; });
   return Object.values(map).map((it) => {
@@ -1179,11 +1203,20 @@ function computeAggregates() {
     const stokAwalKey = Object.keys(STOK_AWAL).find((k) => normKey(k) === key);
     const osAwal = osAwalKey ? OS_AWAL[osAwalKey] : 0;
     const stokAwal = stokAwalKey ? STOK_AWAL[stokAwalKey] : 0;
+    // Stok Palet tetap kumulatif sejak awal (tidak reset bulanan) --
+    // hanya breakdown OS Produksi yang di-reset tiap bulan.
     const stok = stokAwal + it.produksi - it.keluar;
     const siapWH = Math.max(0, Math.min(state.readyWH[it.nama] || 0, Math.max(stok, 0)));
+    // OS sebagai posisi akhir bulan lalu (kumulatif sampai sebelum tanggal 1
+    // bulan berjalan) -- inilah yang otomatis jadi "PO awal bulan" berjalan.
+    const osAwalBulan = osAwal + it.poSebelum - it.produksiSebelum - it.subcontSebelum;
     return Object.assign({}, it, {
       osAwal, stokAwal, stok,
-      os: osAwal + it.po - it.produksi - it.subcont,
+      osAwalBulan,
+      poBulan: osAwalBulan + it.poBulan,
+      produksiBulan: it.produksiBulan,
+      subcontBulan: it.subcontBulan,
+      os: osAwalBulan + it.poBulan - it.produksiBulan - it.subcontBulan,
       siapWH,
       belumWH: Math.max(stok, 0) - siapWH,
     });
@@ -2104,15 +2137,15 @@ function renderOsList(rows, q) {
   const filtered = rows.filter((r) => r.nama.toLowerCase().indexOf(q.toLowerCase()) !== -1);
   if (filtered.length === 0) return emptyState('Tidak ada selisih. Semua PO sudah terpenuhi produksinya.');
   return '<div class="record-list">' + filtered.map((r) => {
-    const totalProduksi = r.produksi + r.subcont;
-    const pct = Math.max(0, Math.min(100, r.po ? (totalProduksi / Math.max(r.po, 1)) * 100 : 0));
+    const totalProduksi = r.produksiBulan + r.subcontBulan;
+    const pct = Math.max(0, Math.min(100, r.poBulan ? (totalProduksi / Math.max(r.poBulan, 1)) * 100 : 0));
     return (
       '<div class="record-row">' +
         '<div class="record-main">' +
           '<div class="record-name">' + esc(r.nama) + '</div>' +
           '<div class="record-meta">' + esc(r.ukuran || '-') + '</div>' +
           '<div class="gauge-track"><div class="gauge-fill ' + (r.os > 0 ? 'danger' : 'good') + '" style="width:' + pct + '%;"></div></div>' +
-          '<div class="record-meta small">PO ' + fmtNum(r.po) + ' &middot; Produksi ' + fmtNum(r.produksi) + (r.subcont > 0 ? ' &middot; Subcont ' + fmtNum(r.subcont) : '') + '</div>' +
+          '<div class="record-meta small">PO ' + fmtNum(r.poBulan) + ' &middot; Produksi ' + fmtNum(r.produksiBulan) + (r.subcontBulan > 0 ? ' &middot; Subcont ' + fmtNum(r.subcontBulan) : '') + '</div>' +
         '</div>' +
         '<div class="record-qty ' + (r.os > 0 ? 'danger' : 'good') + '">' + (r.os > 0 ? '-' : '+') + fmtNum(Math.abs(r.os)) + '<span>' + (r.os > 0 ? 'kurang' : 'lebih') + '</span></div>' +
       '</div>'
@@ -2226,7 +2259,10 @@ function renderDashboardTab() {
   const kekurangan = agg.filter((r) => r.os > 0);
   const totalOs = kekurangan.reduce((s, r) => s + r.os, 0);
 
-  const totalProduksi = state.produksi.filter((r) => r.sumber !== 'subcont').reduce((s, r) => s + (Number(r.qty) || 0), 0);
+  // "Hasil Produksi" di dashboard hanya bulan berjalan (reset tiap tanggal 1) --
+  // data bulan lalu tidak hilang, tetap bisa dilihat lewat filter tanggal di tab Produksi.
+  const monthStart = firstDayOfMonthISO();
+  const totalProduksi = state.produksi.filter((r) => r.sumber !== 'subcont' && r.tanggal >= monthStart).reduce((s, r) => s + (Number(r.qty) || 0), 0);
   const produksiHariIni = state.produksi.filter((r) => r.sumber !== 'subcont' && r.tanggal === today).reduce((s, r) => s + (Number(r.qty) || 0), 0);
 
   // Prioritize by the nearest requested delivery date (tanggal kirim) among each
@@ -2255,7 +2291,7 @@ function renderDashboardTab() {
         statCard('stok', 'Stok Palet', fmtNum(totalStok), 'pcs', 'good', '&#128200;', fmtNum(totalBelumWH) + ' pcs belum siap kirim WH') +
         statCard('os', 'OS Produksi', fmtNum(totalOs), 'pcs', 'danger', OS_ICON, 'belum diproduksi') +
         statCard('pobelum', 'PO Belum Produksi', fmtNum(kekurangan.length), 'customer', 'warn', '&#128230;', 'menunggu produksi') +
-        statCard('produksi', 'Hasil Produksi', fmtNum(totalProduksi), 'pcs', 'neutral', hammerWoodIconSvg(), fmtNum(produksiHariIni) + ' pcs hari ini') +
+        statCard('produksi', 'Hasil Produksi Bulan Ini', fmtNum(totalProduksi), 'pcs', 'neutral', hammerWoodIconSvg(), fmtNum(produksiHariIni) + ' pcs hari ini') +
       '</div>' +
 
       '<div class="card">' +
