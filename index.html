@@ -1297,34 +1297,57 @@ function computeSubcontReport(from, to) {
 }
 
 function computeOsReport(to) {
+  // Mirrors computeAggregates()'s monthly reset: PO/Produksi/Subcont are
+  // scoped to the month containing `to`, with whatever OS was left before
+  // that month folded into the starting "PO" baseline for that month.
+  const monthStart = to.slice(0, 7) + '-01';
   const map = {};
   const touch = (nama, ukuran) => {
     const key = normKey(nama);
     if (!key) return null;
-    if (!map[key]) map[key] = { nama, ukuran: ukuran || CUSTOMER_MAP[nama] || '', po: 0, produksi: 0, subcont: 0 };
+    if (!map[key]) map[key] = {
+      nama, ukuran: ukuran || CUSTOMER_MAP[nama] || '',
+      poBulan: 0, produksiBulan: 0, subcontBulan: 0,
+      poSebelum: 0, produksiSebelum: 0, subcontSebelum: 0,
+    };
     else if (ukuran && !map[key].ukuran) map[key].ukuran = ukuran;
     return key;
   };
   Object.keys(OS_AWAL).forEach((nama) => touch(nama, ''));
-  state.poIn.filter((r) => r.tanggal <= to).forEach((r) => { const k = touch(r.nama, r.ukuran); if (k) map[k].po += Number(r.qty) || 0; });
+  state.poIn.filter((r) => r.tanggal <= to).forEach((r) => {
+    const k = touch(r.nama, r.ukuran);
+    if (!k) return;
+    const qty = Number(r.qty) || 0;
+    if (r.tanggal >= monthStart) map[k].poBulan += qty; else map[k].poSebelum += qty;
+  });
   state.produksi.filter((r) => r.tanggal <= to).forEach((r) => {
     const k = touch(r.nama, r.ukuran);
     if (!k) return;
-    if (r.sumber === 'subcont') map[k].subcont += Number(r.qty) || 0;
-    else map[k].produksi += Number(r.qty) || 0;
+    const qty = Number(r.qty) || 0;
+    if (r.sumber === 'subcont') {
+      if (r.tanggal >= monthStart) map[k].subcontBulan += qty; else map[k].subcontSebelum += qty;
+    } else {
+      if (r.tanggal >= monthStart) map[k].produksiBulan += qty; else map[k].produksiSebelum += qty;
+    }
   });
   const rows = Object.values(map).map((it) => {
     const key = normKey(it.nama);
     const osAwalKey = Object.keys(OS_AWAL).find((k) => normKey(k) === key);
-    const osAwal = osAwalKey ? OS_AWAL[osAwalKey] : 0;
-    return Object.assign({}, it, { osAwal, os: osAwal + it.po - it.produksi - it.subcont });
+    const osAwalStatic = osAwalKey ? OS_AWAL[osAwalKey] : 0;
+    // OS carried in from before this month -- becomes this month's starting "PO".
+    const osAwal = osAwalStatic + it.poSebelum - it.produksiSebelum - it.subcontSebelum;
+    const po = osAwal + it.poBulan; // "PO" shown already includes the carried baseline
+    return Object.assign({}, it, {
+      osAwal, po, produksi: it.produksiBulan, subcont: it.subcontBulan,
+      os: osAwal + it.poBulan - it.produksiBulan - it.subcontBulan,
+    });
   })
     // Resume OS Produksi only lists customers still owed production (os > 0).
     // Customers already fully covered (os === 0) or over-produced (os < 0)
     // are considered settled and are left out of this resume.
     .filter((r) => r.os > 0)
     .sort((a, b) => a.nama.localeCompare(b.nama));
-  const totalPo = rows.reduce((s, r) => s + r.osAwal + r.po, 0);
+  const totalPo = rows.reduce((s, r) => s + r.po, 0);
   const totalProduksiSubcont = rows.reduce((s, r) => s + r.produksi + r.subcont, 0);
   const totalKurang = rows.reduce((s, r) => s + r.os, 0);
   return { rows, totalPo, totalProduksiSubcont, totalKurang, itemKurang: rows.length };
@@ -2521,7 +2544,7 @@ function renderOsReportBody() {
     '</div>' +
     '<table class="report-table"><thead><tr><th>Nama Customer</th><th>Ukuran</th><th class="num">PO</th><th class="num">Prod.</th><th class="num">Subc.</th><th class="num">OS</th></tr></thead><tbody>' +
       (d.rows.length ? d.rows.map((r) => (
-        '<tr><td>' + esc(r.nama) + '</td><td>' + esc(r.ukuran || '-') + '</td><td class="num qty">' + fmtNum(r.osAwal + r.po) + '</td>' +
+        '<tr><td>' + esc(r.nama) + '</td><td>' + esc(r.ukuran || '-') + '</td><td class="num qty">' + fmtNum(r.po) + '</td>' +
         '<td class="num qty">' + fmtNum(r.produksi) + '</td><td class="num qty">' + fmtNum(r.subcont) + '</td>' +
         '<td class="num qty ' + (r.os > 0 ? 'belum' : 'siap') + '">' + (r.os > 0 ? '-' : '+') + fmtNum(Math.abs(r.os)) + '</td></tr>'
       )).join('') : '<tr><td colspan="6" style="text-align:center;color:#9AA3BE;padding:16px;">Semua customer sudah lunas produksinya.</td></tr>') +
