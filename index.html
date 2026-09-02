@@ -2331,7 +2331,10 @@ function renderDashboardTab() {
   const totalBelumWH = agg.reduce((s, r) => s + r.belumWH, 0);
 
   const kekurangan = agg.filter((r) => r.os > 0);
-  const totalOs = kekurangan.reduce((s, r) => s + r.os, 0);
+  // Sum across ALL customers (not just the os>0 subset) so this stays
+  // arithmetically consistent with Resume OS Produksi's headline totals:
+  // Total PO In - Total Produksi+Subcont = Total OS.
+  const totalOs = agg.reduce((s, r) => s + r.os, 0);
 
   // "Hasil Produksi" di dashboard hanya bulan berjalan (reset tiap tanggal 1) --
   // data bulan lalu tidak hilang, tetap bisa dilihat lewat filter tanggal di tab Produksi.
