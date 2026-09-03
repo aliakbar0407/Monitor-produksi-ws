@@ -97,6 +97,29 @@ button, .card, .stat-card, .record-row, .field-input, .tab-btn { transition: tra
   box-shadow: 0 8px 18px -8px rgba(227,105,40,0.55);
 }
 .login-btn:active { background: #C4551C; transform: scale(0.98); }
+.login-btn-bio {
+  margin-top: 10px;
+  width: 100%;
+  background: #FFFFFF;
+  color: #1E2A4A;
+  border: 1.5px solid #DCE1EE;
+  border-radius: var(--r-sm);
+  padding: 12px;
+  font-weight: 700;
+  font-size: 13.5px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.login-btn-bio:active { background: #F3F5FA; transform: scale(0.98); }
+.login-divider { display: flex; align-items: center; gap: 10px; margin: 14px 0 2px; color: #B0B6C5; font-size: 11px; }
+.login-divider::before, .login-divider::after { content: ''; flex: 1; height: 1px; background: #E7EAF2; }
+.biometric-setup-box { margin-top: 10px; padding: 12px; border-radius: 10px; background: #F3F5FA; border: 1px solid #E7EAF2; }
+.biometric-setup-box .field-input { margin-bottom: 10px; }
+.biometric-status { font-size: 12px; color: #2F8F5B; font-weight: 600; margin-top: 8px; }
+.biometric-status.off { color: #7A8296; font-weight: 500; }
 .login-link-btn {
   margin-top: 12px; width: 100%; background: none; border: none; color: #7A8296;
   font-size: 12px; text-decoration: underline; cursor: pointer; font-family: inherit;
@@ -650,6 +673,7 @@ const state = {
   tab: 'dashboard',
   reviewOpen: false,
   settingsOpen: false,
+  biometricSetupPending: false,
   reportOpen: { poin: false, produksi: false, os: false, keluar: false, subcont: false },
   reportRange: {
     poin: { from: firstDayOfMonthISO(), to: todayISO() },
@@ -979,6 +1003,115 @@ function doLogout() {
   render();
 }
 
+// ---------------- Biometric (Fingerprint / Face ID) quick login ----------------
+// Uses the browser's WebAuthn platform authenticator purely as a local
+// "unlock gate" on this device: once someone confirms their fingerprint/Face
+// ID, we auto-fill their nama+password and log in the normal way through
+// login_account. There is no separate server-side WebAuthn verification here
+// (this app has no custom backend beyond Supabase RPC), so the security
+// guarantee is "this device's sensor confirmed it", not a full remote
+// WebAuthn attestation flow. The password itself is only ever stored,
+// lightly obscured, in this browser's localStorage on this device -- never
+// sent anywhere except the same login_account call a normal login already
+// uses.
+const BIOMETRIC_KEY = 'mdpalletindo_biometric';
+
+function biometricSupported() {
+  return !!(window.PublicKeyCredential && navigator.credentials && navigator.credentials.create);
+}
+
+function bufToBase64url(buf) {
+  const bytes = new Uint8Array(buf);
+  let str = '';
+  for (let i = 0; i < bytes.length; i++) str += String.fromCharCode(bytes[i]);
+  return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function base64urlToBuf(b64url) {
+  let b64 = b64url.replace(/-/g, '+').replace(/_/g, '/');
+  while (b64.length % 4) b64 += '=';
+  const str = atob(b64);
+  const bytes = new Uint8Array(str.length);
+  for (let i = 0; i < str.length; i++) bytes[i] = str.charCodeAt(i);
+  return bytes.buffer;
+}
+
+function getBiometricRecord() {
+  try {
+    const raw = localStorage.getItem(BIOMETRIC_KEY);
+    if (!raw) return null;
+    const rec = JSON.parse(raw);
+    if (!rec || !rec.nama || !rec.pw || !rec.credId) return null;
+    return rec;
+  } catch (e) { return null; }
+}
+
+function clearBiometricRecord() {
+  try { localStorage.removeItem(BIOMETRIC_KEY); } catch (e) { /* ignore */ }
+}
+
+async function setupBiometricLogin(nama, password) {
+  if (!biometricSupported()) return { ok: false, error: 'Perangkat atau browser ini tidak mendukung Sidik Jari / Face ID.' };
+  try {
+    const challenge = new Uint8Array(32);
+    crypto.getRandomValues(challenge);
+    const userId = new Uint8Array(16);
+    crypto.getRandomValues(userId);
+    const credential = await navigator.credentials.create({
+      publicKey: {
+        challenge: challenge,
+        rp: { name: 'Monitor Produksi WS' },
+        user: { id: userId, name: nama, displayName: nama },
+        pubKeyCredParams: [
+          { type: 'public-key', alg: -7 },
+          { type: 'public-key', alg: -257 },
+        ],
+        authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'preferred' },
+        timeout: 60000,
+        attestation: 'none',
+      },
+    });
+    if (!credential) return { ok: false, error: 'Pendaftaran dibatalkan.' };
+    const record = { nama: nama, pw: btoa(unescape(encodeURIComponent(password))), credId: bufToBase64url(credential.rawId) };
+    localStorage.setItem(BIOMETRIC_KEY, JSON.stringify(record));
+    return { ok: true };
+  } catch (e) {
+    const msg = (e && e.name === 'NotAllowedError')
+      ? 'Dibatalkan atau tidak diizinkan oleh perangkat.'
+      : 'Gagal mengaktifkan Sidik Jari / Face ID di perangkat ini.';
+    return { ok: false, error: msg };
+  }
+}
+
+async function tryBiometricLogin() {
+  const record = getBiometricRecord();
+  if (!record) return;
+  if (!biometricSupported()) {
+    state.loginError = 'Perangkat atau browser ini tidak mendukung Sidik Jari / Face ID.';
+    render();
+    return;
+  }
+  try {
+    const challenge = new Uint8Array(32);
+    crypto.getRandomValues(challenge);
+    const assertion = await navigator.credentials.get({
+      publicKey: {
+        challenge: challenge,
+        allowCredentials: [{ id: base64urlToBuf(record.credId), type: 'public-key' }],
+        userVerification: 'required',
+        timeout: 60000,
+      },
+    });
+    if (!assertion) return;
+    const password = decodeURIComponent(escape(atob(record.pw)));
+    state.loginError = '';
+    doLoginPassword(record.nama, password);
+  } catch (e) {
+    state.loginError = 'Gagal memverifikasi Sidik Jari / Face ID. Coba lagi atau masuk dengan password.';
+    render();
+  }
+}
+
 // ---------------- PO Masuk / Produksi / Keluar CRUD ----------------
 // Checks Supabase directly (not the local cache) for a row already matching
 // the same tanggal + nama (whitespace/case-insensitive) + qty, so a
@@ -1169,8 +1302,8 @@ function submitPin(pin) {
 }
 
 // ---------------- Settings: profile + password + PIN ----------------
-function openSettings() { state.settingsOpen = true; state.settingsSection = null; render(); }
-function closeSettings() { state.settingsOpen = false; state.settingsSection = null; render(); }
+function openSettings() { state.settingsOpen = true; state.settingsSection = null; state.biometricSetupPending = false; render(); }
+function closeSettings() { state.settingsOpen = false; state.settingsSection = null; state.biometricSetupPending = false; render(); }
 
 async function saveProfile(nama, bagian) {
   const { data, error } = await sb.rpc('update_profile', { p_id: state.account.id, p_nama: nama, p_bagian: bagian });
@@ -1706,9 +1839,21 @@ function renderLoginScreen() {
           '<input id="login-password" type="password" class="login-input" placeholder="Masukkan password" autocomplete="current-password">' +
         '</div>' +
         '<button id="login-btn" type="button" class="login-btn">Masuk</button>' +
+        (renderBiometricLoginButton()) +
         '<button id="login-switch" type="button" class="login-link-btn">Anggota baru? Daftar di sini</button>' +
       '</div>' +
     '</div>'
+  );
+}
+
+function renderBiometricLoginButton() {
+  const record = getBiometricRecord();
+  if (!record || !biometricSupported()) return '';
+  return (
+    '<div class="login-divider">atau</div>' +
+    '<button id="biometric-login-btn" type="button" class="login-btn-bio">' +
+      '&#128272; Masuk sebagai ' + esc(record.nama) + ' dengan Sidik Jari / Face ID' +
+    '</button>'
   );
 }
 
@@ -1717,6 +1862,7 @@ function bindLoginEvents() {
   const namaEl = document.getElementById('login-nama');
   const pwEl = document.getElementById('login-password');
   const switchBtn = document.getElementById('login-switch');
+  const bioBtn = document.getElementById('biometric-login-btn');
 
   const submit = () => doLoginPassword(namaEl.value || '', pwEl.value || '');
   btn.addEventListener('click', submit);
@@ -1728,6 +1874,7 @@ function bindLoginEvents() {
   namaEl.focus();
 
   if (switchBtn) switchBtn.addEventListener('click', showRegisterView);
+  if (bioBtn) bioBtn.addEventListener('click', tryBiometricLogin);
 }
 
 // ---------------- Main app shell ----------------
@@ -3391,9 +3538,51 @@ const SETTINGS_MENU = [
   { key: 'team', icon: '&#128101;', title: 'Anggota Tim', sub: 'Semua orang yang terdaftar di aplikasi ini' },
   { key: 'profile', icon: '&#128100;', title: 'Edit Profil', sub: 'Nama dan bagian akun' },
   { key: 'password', icon: '&#128273;', title: 'Ganti Password', sub: 'Password dipakai untuk masuk ke aplikasi' },
+  { key: 'biometric', icon: '&#128272;', title: 'Sidik Jari / Face ID', sub: 'Masuk cepat tanpa mengetik password di perangkat ini' },
   { key: 'pin', icon: '&#128274;', title: 'Ganti PIN Hapus Data', sub: 'PIN dipakai untuk konfirmasi sebelum menghapus data' },
   { key: 'about', icon: '&#8505;', title: 'Tentang Aplikasi', sub: 'Info versi dan pembuat aplikasi' },
 ];
+
+function renderBiometricSection() {
+  const record = getBiometricRecord();
+  const isOnForThisAccount = !!(record && state.account && record.nama === state.account.nama);
+  if (!biometricSupported()) {
+    return (
+      '<div class="card">' +
+        '<div class="card-head"><div class="card-head-icon">&#128272;</div><div><div class="card-title">Sidik Jari / Face ID</div><div class="card-subtitle">Masuk cepat tanpa mengetik password</div></div></div>' +
+        '<div class="empty-state" style="padding:14px;">Perangkat atau browser ini tidak mendukung Sidik Jari / Face ID.</div>' +
+      '</div>'
+    );
+  }
+  return (
+    '<div class="card">' +
+      '<div class="card-head"><div class="card-head-icon">&#128272;</div><div><div class="card-title">Sidik Jari / Face ID</div><div class="card-subtitle">Masuk cepat tanpa mengetik password di perangkat ini</div></div></div>' +
+      '<div id="biometric-msg" class="settings-msg" style="display:none;"></div>' +
+      '<div class="toggle-row">' +
+        '<div class="toggle-row-text">' +
+          '<div class="toggle-row-title">Aktifkan di perangkat ini</div>' +
+          '<div class="toggle-row-sub">Setelah aktif, layar Masuk akan menawarkan opsi Sidik Jari / Face ID.</div>' +
+        '</div>' +
+        '<button type="button" id="biometric-toggle" class="toggle-switch ' + (isOnForThisAccount ? 'on' : '') + '" role="switch" aria-checked="' + (isOnForThisAccount ? 'true' : 'false') + '"><span class="toggle-knob"></span></button>' +
+      '</div>' +
+      (isOnForThisAccount
+        ? '<div class="biometric-status">&#10003; Aktif untuk akun ' + esc(record.nama) + ' di perangkat ini.</div>'
+        : (record ? '<div class="biometric-status off">Saat ini aktif untuk akun lain (' + esc(record.nama) + ') di perangkat ini. Mengaktifkan akan menggantinya.</div>' : '')
+      ) +
+      (state.biometricSetupPending
+        ? (
+          '<div class="biometric-setup-box">' +
+            '<div class="field-label" style="margin-bottom:6px;">Masukkan password kamu untuk mengonfirmasi</div>' +
+            '<input id="biometric-confirm-pw" type="password" class="field-input" placeholder="Password akunmu" autocomplete="current-password">' +
+            '<button type="button" id="biometric-confirm-btn" class="btn-primary">&#10003; Aktifkan Sidik Jari / Face ID</button>' +
+            '<button type="button" id="biometric-cancel-btn" class="login-link-btn" style="margin-top:8px;">Batal</button>' +
+          '</div>'
+        )
+        : ''
+      ) +
+    '</div>'
+  );
+}
 
 function renderSettingsOverlay() {
   return (
@@ -3499,6 +3688,7 @@ function renderSettingsSection(key) {
         '</div>' +
       '</div>'
     ),
+    biometric: renderBiometricSection(),
     pin: (
       '<div class="card">' +
         '<div class="card-head"><div class="card-head-icon">&#128274;</div><div><div class="card-title">Ganti PIN Hapus Data</div><div class="card-subtitle">PIN dipakai untuk konfirmasi sebelum menghapus data</div></div></div>' +
@@ -3566,7 +3756,7 @@ function bindSettingsEvents() {
     });
   });
   const backBtn = document.getElementById('settings-back');
-  if (backBtn) backBtn.addEventListener('click', () => { state.settingsSection = null; render(); });
+  if (backBtn) backBtn.addEventListener('click', () => { state.settingsSection = null; state.biometricSetupPending = false; render(); });
 
   const aiToggle = document.getElementById('ai-enabled-toggle');
   if (aiToggle) {
@@ -3575,6 +3765,53 @@ function bindSettingsEvents() {
       if (!state.aiEnabled) state.aiOpen = false;
       try { localStorage.setItem('mdpalletindo_ai_enabled', state.aiEnabled ? '1' : '0'); } catch (e) { /* ignore */ }
       render();
+    });
+  }
+
+  const bioToggle = document.getElementById('biometric-toggle');
+  if (bioToggle) {
+    bioToggle.addEventListener('click', () => {
+      const record = getBiometricRecord();
+      const isOnForThisAccount = !!(record && state.account && record.nama === state.account.nama);
+      if (isOnForThisAccount) {
+        clearBiometricRecord();
+        state.biometricSetupPending = false;
+        render();
+      } else {
+        state.biometricSetupPending = true;
+        render();
+        const pwEl = document.getElementById('biometric-confirm-pw');
+        if (pwEl) pwEl.focus();
+      }
+    });
+  }
+
+  const bioCancelBtn = document.getElementById('biometric-cancel-btn');
+  if (bioCancelBtn) bioCancelBtn.addEventListener('click', () => { state.biometricSetupPending = false; render(); });
+
+  const bioConfirmBtn = document.getElementById('biometric-confirm-btn');
+  if (bioConfirmBtn) {
+    bioConfirmBtn.addEventListener('click', async () => {
+      const pwEl = document.getElementById('biometric-confirm-pw');
+      const pw = (pwEl && pwEl.value) || '';
+      if (!pw) { showSettingsMsg('biometric-msg', 'Masukkan password kamu dulu.', true); return; }
+      bioConfirmBtn.textContent = 'Memeriksa password...';
+      const { data, error } = await sb.rpc('login_account', { p_nama: state.account.nama, p_password: pw });
+      if (error || !data || !data[0]) {
+        bioConfirmBtn.innerHTML = '&#10003; Aktifkan Sidik Jari / Face ID';
+        showSettingsMsg('biometric-msg', 'Password salah.', true);
+        return;
+      }
+      bioConfirmBtn.textContent = 'Mengaktifkan...';
+      const result = await setupBiometricLogin(state.account.nama, pw);
+      bioConfirmBtn.innerHTML = '&#10003; Aktifkan Sidik Jari / Face ID';
+      if (!result.ok) {
+        showSettingsMsg('biometric-msg', result.error, true);
+        return;
+      }
+      state.biometricSetupPending = false;
+      render();
+      showSettingsMsg('biometric-msg', 'Sidik Jari / Face ID berhasil diaktifkan di perangkat ini.', false);
     });
   }
 
