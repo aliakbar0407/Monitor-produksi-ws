@@ -1198,6 +1198,7 @@ async function addKeluar(record) {
   rememberCustomer(row.nama, row.ukuran);
   const { error } = await sb.from('pallet_keluar').insert(keluarToDb(row));
   if (error) console.error('addKeluar', error);
+  else adjustReadyWHForShipment(row.nama, Number(row.qty) || 0);
 }
 async function updatePoIn(id, record) {
   const existing = state.poIn.find((r) => r.id === id) || {};
@@ -1219,12 +1220,21 @@ async function updateProduksi(id, record) {
 }
 async function updateKeluar(id, record) {
   const existing = state.keluar.find((r) => r.id === id) || {};
+  const oldNama = existing.nama;
+  const oldQty = Number(existing.qty) || 0;
   const row = Object.assign({}, existing, record, { id, loggedAt: new Date().toISOString(), created_by: existing.created_by, updated_by: state.account.nama });
   state.keluar = state.keluar.map((r) => (r.id === id ? row : r));
   state.editing.keluar = null;
   render();
   const { error } = await sb.from('pallet_keluar').update(keluarToDb(row)).eq('id', id);
-  if (error) console.error('updateKeluar', error);
+  if (error) { console.error('updateKeluar', error); return; }
+  const newQty = Number(row.qty) || 0;
+  if (oldNama === row.nama) {
+    adjustReadyWHForShipment(row.nama, newQty - oldQty);
+  } else {
+    adjustReadyWHForShipment(oldNama, -oldQty);
+    adjustReadyWHForShipment(row.nama, newQty);
+  }
 }
 async function removePoInActual(id) {
   state.poIn = removeById(state.poIn, id);
@@ -1237,9 +1247,11 @@ async function removeProduksiActual(id) {
   await sb.from('produksi').delete().eq('id', id);
 }
 async function removeKeluarActual(id) {
+  const existing = state.keluar.find((r) => r.id === id);
   state.keluar = removeById(state.keluar, id);
   render();
   await sb.from('pallet_keluar').delete().eq('id', id);
+  if (existing) adjustReadyWHForShipment(existing.nama, -(Number(existing.qty) || 0));
 }
 
 // ---------------- Siap kirim WH ----------------
@@ -1260,6 +1272,30 @@ async function setReadyWH(nama, qty) {
     render();
     alert('Gagal menyimpan siap kirim WH: ' + error.message);
   }
+}
+
+// Keeps "siap kirim WH" in sync whenever pallets actually leave (Pallet
+// Keluar dicatat/diubah/dihapus). Sebelumnya nilai "siap kirim" yang
+// tersimpan tidak pernah dikurangi saat pallet benar-benar keluar -- hanya
+// dibatasi (clamped) ke stok saat ditampilkan. Begitu produksi baru menaikkan
+// stok lagi, angka lama yang sudah terkirim itu muncul kembali seolah-olah
+// masih "siap kirim". deltaShipped positif berarti jumlah yang keluar
+// bertambah (readyWH harus berkurang sebesar itu); negatif berarti
+// sebaliknya (mis. saat sebuah catatan Keluar dihapus/dikurangi).
+async function adjustReadyWHForShipment(nama, deltaShipped) {
+  if (!nama || !deltaShipped) return;
+  const current = state.readyWH[nama] || 0;
+  const agg = computeAggregates();
+  const item = agg.find((r) => r.nama === nama);
+  const maxStok = item ? Math.max(item.stok, 0) : 0;
+  const next = Math.max(0, Math.min(current - deltaShipped, maxStok));
+  if (next === current) return;
+  state.readyWH = Object.assign({}, state.readyWH, { [nama]: next });
+  render();
+  const { error } = await sb.from('stok_ready_wh').upsert({
+    nama, qty: next, updated_by: state.account ? state.account.nama : '',
+  }, { onConflict: 'nama' });
+  if (error) console.error('adjustReadyWHForShipment', error);
 }
 
 // ---------------- Edit mode ----------------
