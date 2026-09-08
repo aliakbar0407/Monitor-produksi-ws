@@ -533,6 +533,11 @@ button, .card, .stat-card, .record-row, .field-input, .tab-btn { transition: tra
 .report-head-doc { font-size: 12px; color: #E36928; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; margin-top: 1px; }
 .report-meta { font-size: 11.5px; color: #7A8296; margin-bottom: 14px; }
 .report-table { width: 100%; border-collapse: collapse; table-layout: auto; }
+/* Tabel resume bisa punya banyak kolom (mis. Resume OS Produksi) yang total
+   lebarnya melebihi layar HP dalam mode potret. Dibungkus wrapper yang bisa
+   discroll horizontal supaya tidak ada kolom yang hilang/terpotong tanpa
+   harus memutar layar ke landscape -- tinggal geser ke samping. */
+.report-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .report-table th {
   background: #344DA1; color: #FFFFFF; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.02em;
   padding: 6px 5px; text-align: left; white-space: nowrap;
@@ -676,6 +681,7 @@ const state = {
   biometricSetupPending: false,
   reportOpen: { poin: false, produksi: false, os: false, keluar: false, subcont: false },
   reportRange: {
+    stok: { to: todayISO() },
     poin: { from: firstDayOfMonthISO(), to: todayISO() },
     produksi: { from: firstDayOfMonthISO(), to: todayISO() },
     os: { to: todayISO() },
@@ -1448,6 +1454,46 @@ function computeAggregates() {
 
 // ---------------- Period reports (PO Masuk / Produksi / OS / Keluar) ----------------
 function openReport(type) { state.reportOpen[type] = true; render(); }
+
+// Stok Palet WS "as of" a chosen date -- reuses the exact same stok formula
+// as computeAggregates() (stokAwal + produksi sendiri - keluar), but only
+// counting produksi/keluar rows up to and including that date, so the
+// report can show what the stock looked like as of any past date, not only
+// today. "Siap kirim WH" has no historical record in the database (it's a
+// live, manually-set value), so it always reflects today's input -- clamped
+// to whatever the historical stok was on the chosen date.
+function computeStokReport(to) {
+  const map = {};
+  const touch = (nama, ukuran) => {
+    const key = normKey(nama);
+    if (!key) return null;
+    if (!map[key]) map[key] = { nama, ukuran: ukuran || CUSTOMER_MAP[nama] || '', produksi: 0, keluar: 0 };
+    else if (ukuran && !map[key].ukuran) map[key].ukuran = ukuran;
+    return key;
+  };
+  Object.keys(STOK_AWAL).forEach((nama) => touch(nama, ''));
+  state.produksi.forEach((r) => {
+    if (r.sumber === 'subcont' || r.tanggal > to) return;
+    const k = touch(r.nama, r.ukuran);
+    if (k) map[k].produksi += Number(r.qty) || 0;
+  });
+  state.keluar.forEach((r) => {
+    if (r.tanggal > to) return;
+    const k = touch(r.nama, r.ukuran);
+    if (k) map[k].keluar += Number(r.qty) || 0;
+  });
+  return Object.values(map)
+    .map((it) => {
+      const key = normKey(it.nama);
+      const stokAwalKey = Object.keys(STOK_AWAL).find((k) => normKey(k) === key);
+      const stokAwal = stokAwalKey ? STOK_AWAL[stokAwalKey] : 0;
+      const stok = stokAwal + it.produksi - it.keluar;
+      const siapWH = Math.max(0, Math.min(state.readyWH[it.nama] || 0, Math.max(stok, 0)));
+      return Object.assign({}, it, { stok, siapWH, belumWH: Math.max(stok, 0) - siapWH });
+    })
+    .filter((r) => r.stok > 0)
+    .sort((a, b) => a.nama.localeCompare(b.nama));
+}
 function closeReport(type) { state.reportOpen[type] = false; render(); }
 function updateReportRange(type, from, to) {
   state.reportRange[type] = type === 'os' ? { to: to } : { from: from, to: to };
@@ -1669,6 +1715,35 @@ async function downloadCardAsJpg(cardEl, filename, buttonEl) {
   if (!cardEl || typeof html2canvas === 'undefined') return;
   const originalLabel = buttonEl ? buttonEl.innerHTML : '';
   if (buttonEl) buttonEl.textContent = 'Menyiapkan...';
+
+  // Tabel resume dengan banyak kolom bisa lebih lebar dari layar HP (mode
+  // potret), jadi di layar dibungkus wrapper yang bisa discroll horizontal.
+  // Tapi kalau di-screenshot apa adanya, html2canvas cuma menangkap bagian
+  // yang kebetulan terlihat di layar -- sisanya (yang perlu discroll) hilang
+  // dari hasil JPG. Di sini kartu laporan dilebarkan sementara ke lebar asli
+  // tabelnya (tanpa perlu memutar HP ke landscape) sebelum di-screenshot,
+  // supaya JPG yang diunduh selalu utuh, lalu dikembalikan seperti semula.
+  const wraps = Array.from(cardEl.querySelectorAll('.report-table-wrap'));
+  const wrapRestores = wraps.map((wrap) => ({
+    wrap,
+    overflow: wrap.style.overflow,
+    width: wrap.style.width,
+  }));
+  let naturalWidth = 0;
+  wraps.forEach((wrap) => {
+    wrap.style.overflow = 'visible';
+    wrap.style.width = 'max-content';
+    const table = wrap.querySelector('table');
+    if (table) naturalWidth = Math.max(naturalWidth, table.offsetWidth);
+  });
+  const prevCardWidth = cardEl.style.width;
+  const prevCardMaxWidth = cardEl.style.maxWidth;
+  if (naturalWidth > 0) {
+    const cardPaddingApprox = 40; // kira-kira padding kiri+kanan .report-card
+    cardEl.style.maxWidth = 'none';
+    cardEl.style.width = (naturalWidth + cardPaddingApprox) + 'px';
+  }
+
   try {
     const canvas = await html2canvas(cardEl, { scale: 2, backgroundColor: '#ffffff', useCORS: true });
     const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.95));
@@ -1695,6 +1770,9 @@ async function downloadCardAsJpg(cardEl, filename, buttonEl) {
   } catch (e) {
     // best effort -- leave the button label restored below
   } finally {
+    cardEl.style.width = prevCardWidth;
+    cardEl.style.maxWidth = prevCardMaxWidth;
+    wrapRestores.forEach((r) => { r.wrap.style.overflow = r.overflow; r.wrap.style.width = r.width; });
     if (buttonEl) buttonEl.innerHTML = originalLabel;
   }
 }
@@ -2750,12 +2828,13 @@ function renderPoinReportBody() {
       '<div class="report-resume-box good"><div class="report-resume-value">' + fmtNum(d.totalQty) + '</div><div class="report-resume-label">Total Qty</div></div>' +
     '</div>' +
     (d.nearestKirim ? '<div class="report-note">Jadwal kirim terdekat: ' + fmtDate(d.nearestKirim) + '</div>' : '') +
+    '<div class="report-table-wrap">' +
     '<table class="report-table"><thead><tr><th>Tanggal</th><th>Nama Customer</th><th>Ukuran</th><th class="num">Qty</th><th>No PO</th><th>Kirim</th></tr></thead><tbody>' +
       (d.rows.length ? d.rows.map((r) => (
         '<tr><td>' + fmtDate(r.tanggal) + '</td><td>' + esc(r.nama) + '</td><td>' + esc(r.ukuran || '-') + '</td>' +
         '<td class="num qty">' + fmtNum(r.qty) + '</td><td>' + esc(r.noPo || '-') + '</td><td>' + (r.tglKirim ? fmtDate(r.tglKirim) : '-') + '</td></tr>'
       )).join('') : '<tr><td colspan="6" style="text-align:center;color:#9AA3BE;padding:16px;">Tidak ada PO masuk pada periode ini.</td></tr>') +
-    '</tbody></table>' +
+    '</tbody></table></div>' +
     reportCardClose(today)
   );
 }
@@ -2771,13 +2850,14 @@ function renderProduksiReportBody() {
       '<div class="report-resume-box"><div class="report-resume-value">' + fmtNum(d.totalJenis) + '</div><div class="report-resume-label">Jenis Pallet</div></div>' +
       '<div class="report-resume-box good"><div class="report-resume-value">' + fmtNum(d.totalQty) + '</div><div class="report-resume-label">Total Hasil Produksi</div></div>' +
     '</div>' +
+    '<div class="report-table-wrap">' +
     '<table class="report-table"><thead><tr><th>Nama Customer</th><th>Ukuran</th><th class="num">Qty Diproduksi</th></tr></thead><tbody>' +
       (d.rows.length ? d.rows.map((r) => (
         '<tr><td>' + esc(r.nama) + '</td><td>' + esc(r.ukuran || '-') + '</td><td class="num qty">' + fmtNum(r.qty) + '</td></tr>'
       )).join('') : '<tr><td colspan="3" style="text-align:center;color:#9AA3BE;padding:16px;">Tidak ada produksi pada periode ini.</td></tr>') +
     '</tbody>' +
     (d.rows.length ? '<tfoot><tr class="report-total-row"><td colspan="2">TOTAL</td><td class="num">' + fmtNum(d.totalQty) + '</td></tr></tfoot>' : '') +
-    '</table>' +
+    '</table></div>' +
     reportCardClose(today)
   );
 }
@@ -2795,21 +2875,23 @@ function renderSubcontReportBody() {
       '<div class="report-resume-box good"><div class="report-resume-value">' + fmtNum(d.totalQty) + '</div><div class="report-resume-label">Total Pallet Subcont</div></div>' +
     '</div>' +
     '<div class="report-note">Resume Per Supplier</div>' +
+    '<div class="report-table-wrap">' +
     '<table class="report-table"><thead><tr><th>Nama Subcont / Supplier</th><th class="num">Jml Customer</th><th class="num">Jml Pengiriman</th><th class="num">Total Qty</th></tr></thead><tbody>' +
       (d.bySupplier.length ? d.bySupplier.map((s) => (
         '<tr><td>' + esc(s.subcontNama) + '</td><td class="num qty">' + fmtNum(s.jumlahCustomer) + '</td><td class="num qty">' + fmtNum(s.jumlahPengiriman) + '</td><td class="num qty">' + fmtNum(s.qty) + '</td></tr>'
       )).join('') : '<tr><td colspan="4" style="text-align:center;color:#9AA3BE;padding:16px;">Tidak ada pallet subcont pada periode ini.</td></tr>') +
     '</tbody>' +
     (d.bySupplier.length ? '<tfoot><tr class="report-total-row"><td>TOTAL</td><td class="num">-</td><td class="num">-</td><td class="num">' + fmtNum(d.totalQty) + '</td></tr></tfoot>' : '') +
-    '</table>' +
+    '</table></div>' +
     '<div class="report-note" style="margin-top:14px;">Rincian Per Customer &amp; Supplier</div>' +
+    '<div class="report-table-wrap">' +
     '<table class="report-table"><thead><tr><th>Nama Customer</th><th>Ukuran</th><th>Subcont</th><th class="num">Qty</th></tr></thead><tbody>' +
       (d.rows.length ? d.rows.map((r) => (
         '<tr><td>' + esc(r.nama) + '</td><td>' + esc(r.ukuran || '-') + '</td><td>' + esc(r.subcontNama || '-') + '</td><td class="num qty">' + fmtNum(r.qty) + '</td></tr>'
       )).join('') : '<tr><td colspan="4" style="text-align:center;color:#9AA3BE;padding:16px;">Tidak ada pallet subcont pada periode ini.</td></tr>') +
     '</tbody>' +
     (d.rows.length ? '<tfoot><tr class="report-total-row"><td colspan="3">TOTAL</td><td class="num">' + fmtNum(d.totalQty) + '</td></tr></tfoot>' : '') +
-    '</table>' +
+    '</table></div>' +
     reportCardClose(today)
   );
 }
@@ -2826,13 +2908,14 @@ function renderOsReportBody() {
       '<div class="report-resume-box good"><div class="report-resume-value">' + fmtNum(d.totalProduksiSubcont) + '</div><div class="report-resume-label">Total Produksi + Subcont</div></div>' +
       '<div class="report-resume-box warn"><div class="report-resume-value">' + fmtNum(d.totalKurang) + '</div><div class="report-resume-label">Total Kekurangan (' + d.itemKurang + ' item)</div></div>' +
     '</div>' +
+    '<div class="report-table-wrap">' +
     '<table class="report-table"><thead><tr><th>Nama Customer</th><th>Ukuran</th><th class="num">PO</th><th class="num">Prod.</th><th class="num">Subc.</th><th class="num">OS</th></tr></thead><tbody>' +
       (d.rows.length ? d.rows.map((r) => (
         '<tr><td>' + esc(r.nama) + '</td><td>' + esc(r.ukuran || '-') + '</td><td class="num qty">' + fmtNum(r.po) + '</td>' +
         '<td class="num qty">' + fmtNum(r.produksi) + '</td><td class="num qty">' + fmtNum(r.subcont) + '</td>' +
         '<td class="num qty ' + (r.os > 0 ? 'belum' : 'siap') + '">' + (r.os > 0 ? '-' : '+') + fmtNum(Math.abs(r.os)) + '</td></tr>'
       )).join('') : '<tr><td colspan="6" style="text-align:center;color:#9AA3BE;padding:16px;">Semua customer sudah lunas produksinya.</td></tr>') +
-    '</tbody></table>' +
+    '</tbody></table></div>' +
     reportCardClose(today)
   );
 }
@@ -2850,6 +2933,7 @@ function renderKeluarReportBody() {
       '<div class="report-resume-box warn"><div class="report-resume-value">' + fmtNum(d.totalKeluar) + '</div><div class="report-resume-label">Keluar</div></div>' +
     '</div>' +
     '<div class="report-note">Sisa stok akhir periode: ' + fmtNum(d.totalSisa) + ' pcs</div>' +
+    '<div class="report-table-wrap">' +
     '<table class="report-table"><thead><tr><th>Nama Customer</th><th>Ukuran</th><th class="num">Awal</th><th class="num">Masuk</th><th class="num">Keluar</th><th class="num">Sisa</th></tr></thead><tbody>' +
       (d.rows.length ? d.rows.map((r) => (
         '<tr><td>' + esc(r.nama) + '</td><td>' + esc(r.ukuran || '-') + '</td>' +
@@ -2860,7 +2944,7 @@ function renderKeluarReportBody() {
       )).join('') : '<tr><td colspan="6" style="text-align:center;color:#9AA3BE;padding:16px;">Tidak ada mutasi pada periode ini.</td></tr>') +
     '</tbody>' +
     (d.rows.length ? '<tfoot><tr class="report-total-row"><td colspan="2">TOTAL</td><td class="num">' + fmtNum(d.totalStokAwal) + '</td><td class="num">+' + fmtNum(d.totalMasuk) + '</td><td class="num">-' + fmtNum(d.totalKeluar) + '</td><td class="num">' + fmtNum(d.totalSisa) + '</td></tr></tfoot>' : '') +
-    '</table>' +
+    '</table></div>' +
     reportCardClose(today)
   );
 }
@@ -2916,15 +3000,7 @@ function fmtDateLong(iso) {
 }
 
 function renderReviewOverlay() {
-  const agg = computeAggregates();
-  const rows = agg
-    .filter((r) => r.stok > 0)
-    .sort((a, b) => a.nama.localeCompare(b.nama));
-  const total = rows.reduce((s, r) => s + r.stok, 0);
-  const totalSiap = rows.reduce((s, r) => s + r.siapWH, 0);
-  const totalBelum = rows.reduce((s, r) => s + r.belumWH, 0);
-  const today = todayISO();
-
+  const range = state.reportRange.stok || { to: todayISO() };
   return (
     '<div class="review-toolbar">' +
       '<div class="review-toolbar-title">Laporan Stok Pallet WS</div>' +
@@ -2934,36 +3010,59 @@ function renderReviewOverlay() {
       '</div>' +
     '</div>' +
     '<div class="review-wrap">' +
-      '<div class="report-card" id="report-card">' +
-        '<div class="report-head">' +
-          '<img src="' + LOGO_DATA_URI + '" alt="MD Palletindo">' +
-          '<div>' +
-            '<div class="report-head-company">MD Palletindo</div>' +
-            '<div class="report-head-doc">Laporan Stok Pallet WS</div>' +
-          '</div>' +
+      '<div class="settings-stack">' +
+        '<div class="card">' +
+          '<div class="card-head"><div class="card-head-icon">&#128197;</div><div><div class="card-title">Pilih Periode</div><div class="card-subtitle">Laporan akan diperbarui otomatis</div></div></div>' +
+          '<div class="field"><label class="field-label">Data Stok Sampai Tanggal</label><input type="date" id="review-date-to" class="field-input" value="' + esc(range.to) + '"></div>' +
         '</div>' +
-        '<div class="report-meta">Tanggal: ' + fmtDateLong(today) + ' &middot; ' + rows.length + ' jenis pallet</div>' +
-        '<table class="report-table">' +
-          '<thead><tr><th>Nama Customer</th><th>Ukuran</th><th class="num">Stok</th><th class="num">Siap WH</th><th class="num">Belum</th></tr></thead>' +
-          '<tbody>' +
-            rows.map((r) => (
-              '<tr><td>' + esc(r.nama) + '</td><td>' + esc(r.ukuran || '-') + '</td><td class="num qty">' + fmtNum(r.stok) + '</td>' +
-              '<td class="num qty siap">' + fmtNum(r.siapWH) + '</td><td class="num qty belum">' + fmtNum(r.belumWH) + '</td></tr>'
-            )).join('') +
-            (rows.length === 0 ? '<tr><td colspan="5" style="text-align:center;color:#9AA3BE;padding:16px;">Belum ada stok pallet.</td></tr>' : '') +
-          '</tbody>' +
-          (rows.length > 0 ? (
-            '<tfoot><tr class="report-total-row"><td colspan="2">TOTAL</td><td class="num">' + fmtNum(total) + '</td><td class="num">' + fmtNum(totalSiap) + '</td><td class="num">' + fmtNum(totalBelum) + '</td></tr></tfoot>'
-          ) : '') +
-        '</table>' +
-        (rows.length > 0 ? (
-          '<div class="report-resume">' +
-            '<div class="report-resume-box good"><div class="report-resume-value">' + fmtNum(totalSiap) + '</div><div class="report-resume-label">Siap Kirim WH</div></div>' +
-            '<div class="report-resume-box warn"><div class="report-resume-value">' + fmtNum(totalBelum) + '</div><div class="report-resume-label">Belum Siap</div></div>' +
-          '</div>'
-        ) : '') +
-        '<div class="report-foot">Dicetak otomatis dari Monitor Produksi WS &middot; ' + fmtDateLong(today) + '</div>' +
+        '<div id="review-body">' + renderReviewBody() + '</div>' +
       '</div>' +
+    '</div>'
+  );
+}
+
+function renderReviewBody() {
+  const range = state.reportRange.stok || { to: todayISO() };
+  const isToday = range.to >= todayISO();
+  const rows = computeStokReport(range.to);
+  const total = rows.reduce((s, r) => s + r.stok, 0);
+  const totalSiap = rows.reduce((s, r) => s + r.siapWH, 0);
+  const totalBelum = rows.reduce((s, r) => s + r.belumWH, 0);
+  const today = todayISO();
+
+  return (
+    '<div class="report-card" id="report-card">' +
+      '<div class="report-head">' +
+        '<img src="' + LOGO_DATA_URI + '" alt="MD Palletindo">' +
+        '<div>' +
+          '<div class="report-head-company">MD Palletindo</div>' +
+          '<div class="report-head-doc">Laporan Stok Pallet WS</div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="report-meta">Tanggal: ' + fmtDateLong(range.to) + ' &middot; ' + rows.length + ' jenis pallet</div>' +
+      (isToday ? '' : '<div class="report-note">Catatan: kolom Siap WH &amp; Belum mengikuti status input terkini (tidak ada riwayat historisnya), sedangkan Stok dihitung ulang sesuai tanggal terpilih.</div>') +
+      '<div class="report-table-wrap">' +
+      '<table class="report-table">' +
+        '<thead><tr><th>Nama Customer</th><th>Ukuran</th><th class="num">Stok</th><th class="num">Siap WH</th><th class="num">Belum</th></tr></thead>' +
+        '<tbody>' +
+          rows.map((r) => (
+            '<tr><td>' + esc(r.nama) + '</td><td>' + esc(r.ukuran || '-') + '</td><td class="num qty">' + fmtNum(r.stok) + '</td>' +
+            '<td class="num qty siap">' + fmtNum(r.siapWH) + '</td><td class="num qty belum">' + fmtNum(r.belumWH) + '</td></tr>'
+          )).join('') +
+          (rows.length === 0 ? '<tr><td colspan="5" style="text-align:center;color:#9AA3BE;padding:16px;">Belum ada stok pallet.</td></tr>' : '') +
+        '</tbody>' +
+        (rows.length > 0 ? (
+          '<tfoot><tr class="report-total-row"><td colspan="2">TOTAL</td><td class="num">' + fmtNum(total) + '</td><td class="num">' + fmtNum(totalSiap) + '</td><td class="num">' + fmtNum(totalBelum) + '</td></tr></tfoot>'
+        ) : '') +
+      '</table>' +
+      '</div>' +
+      (rows.length > 0 ? (
+        '<div class="report-resume">' +
+          '<div class="report-resume-box good"><div class="report-resume-value">' + fmtNum(totalSiap) + '</div><div class="report-resume-label">Siap Kirim WH</div></div>' +
+          '<div class="report-resume-box warn"><div class="report-resume-value">' + fmtNum(totalBelum) + '</div><div class="report-resume-label">Belum Siap</div></div>' +
+        '</div>'
+      ) : '') +
+      '<div class="report-foot">Dicetak otomatis dari Monitor Produksi WS &middot; ' + fmtDateLong(today) + '</div>' +
     '</div>'
   );
 }
@@ -2971,6 +3070,7 @@ function renderReviewOverlay() {
 function bindReviewEvents() {
   const closeBtn = document.getElementById('review-close');
   const downloadBtn = document.getElementById('review-download');
+  const dateToEl = document.getElementById('review-date-to');
   if (closeBtn) {
     closeBtn.addEventListener('click', () => {
       state.reviewOpen = false;
@@ -2980,7 +3080,15 @@ function bindReviewEvents() {
   if (downloadBtn) {
     downloadBtn.addEventListener('click', () => {
       const card = document.getElementById('report-card');
-      downloadCardAsJpg(card, 'Laporan-Stok-Pallet-WS-' + todayISO() + '.jpg', downloadBtn);
+      const range = state.reportRange.stok || { to: todayISO() };
+      downloadCardAsJpg(card, 'Laporan-Stok-Pallet-WS-' + range.to + '.jpg', downloadBtn);
+    });
+  }
+  if (dateToEl) {
+    dateToEl.addEventListener('change', () => {
+      state.reportRange.stok = { to: dateToEl.value || todayISO() };
+      const body = document.getElementById('review-body');
+      if (body) body.innerHTML = renderReviewBody();
     });
   }
 }
@@ -3160,6 +3268,7 @@ async function downloadMutasiCustomerJpg(nama, ukuran, range, buttonEl) {
       '<div class="report-resume-box warn"><div class="report-resume-value">-' + fmtNum(keluar) + '</div><div class="report-resume-label">Keluar</div></div>' +
     '</div>' +
     '<div class="report-note">Sisa stok akhir periode: ' + fmtNum(sisaStok) + ' pcs</div>' +
+    '<div class="report-table-wrap">' +
     '<table class="report-table"><thead><tr><th>Tanggal</th><th class="num">Masuk</th><th class="num">Keluar</th></tr></thead><tbody>' +
       (detail.length ? detail.map((e) => (
         '<tr><td>' + fmtDate(e.tanggal) + '</td>' +
@@ -3168,7 +3277,7 @@ async function downloadMutasiCustomerJpg(nama, ukuran, range, buttonEl) {
       )).join('') : '<tr><td colspan="3" style="text-align:center;color:#9AA3BE;padding:16px;">Tidak ada transaksi pada periode ini.</td></tr>') +
     '</tbody>' +
     (detail.length ? '<tfoot><tr class="report-total-row"><td>TOTAL</td><td class="num">+' + fmtNum(masuk) + '</td><td class="num">-' + fmtNum(keluar) + '</td></tr></tfoot>' : '') +
-    '</table>' +
+    '</table></div>' +
     reportCardClose(today)
   );
 
