@@ -448,6 +448,8 @@ button, .card, .stat-card, .record-row, .field-input, .tab-btn { transition: tra
   justify-content: center; gap: 6px; cursor: pointer; font-family: inherit;
 }
 .btn-link:active { background: #F0F3FB; }
+.record-actions { display: flex; gap: 8px; margin-top: 12px; }
+.record-actions .btn-link { margin-top: 0; flex: 1; }
 .type-tag { display: inline-block; font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; padding: 1px 6px; border-radius: 5px; margin-right: 4px; }
 .type-tag.po { background: #FCE9D2; color: #B5651A; }
 .type-tag.produksi { background: #DFF3E6; color: #2F8F5B; }
@@ -522,6 +524,7 @@ button, .card, .stat-card, .record-row, .field-input, .tab-btn { transition: tra
 }
 .review-btn.close { background: rgba(255,255,255,0.15); color: #FFFFFF; }
 .review-btn.download { background: #E36928; color: #FFFFFF; }
+.review-btn.share { background: #2F8F5B; color: #FFFFFF; }
 .review-wrap { padding: 18px 14px 40px; display: flex; justify-content: center; }
 .report-card {
   background: #FFFFFF; width: 100%; max-width: 480px; border-radius: 10px; padding: 22px 18px;
@@ -1762,19 +1765,16 @@ function computeMutasiDetail(nama, from, to) {
   return Object.values(byDate).sort((a, b) => (a.tanggal < b.tanggal ? -1 : 1));
 }
 
-// ---------------- Download report card as JPG (with gallery-save support) ----------------
-async function downloadCardAsJpg(cardEl, filename, buttonEl) {
-  if (!cardEl || typeof html2canvas === 'undefined') return;
-  const originalLabel = buttonEl ? buttonEl.innerHTML : '';
-  if (buttonEl) buttonEl.textContent = 'Menyiapkan...';
-
-  // Tabel resume dengan banyak kolom bisa lebih lebar dari layar HP (mode
-  // potret), jadi di layar dibungkus wrapper yang bisa discroll horizontal.
-  // Tapi kalau di-screenshot apa adanya, html2canvas cuma menangkap bagian
-  // yang kebetulan terlihat di layar -- sisanya (yang perlu discroll) hilang
-  // dari hasil JPG. Di sini kartu laporan dilebarkan sementara ke lebar asli
-  // tabelnya (tanpa perlu memutar HP ke landscape) sebelum di-screenshot,
-  // supaya JPG yang diunduh selalu utuh, lalu dikembalikan seperti semula.
+// ---------------- Report card -> JPG: capture, download, share ----------------
+// Tabel resume dengan banyak kolom bisa lebih lebar dari layar HP (mode
+// potret), jadi di layar dibungkus wrapper yang bisa discroll horizontal.
+// Tapi kalau di-screenshot apa adanya, html2canvas cuma menangkap bagian
+// yang kebetulan terlihat di layar -- sisanya (yang perlu discroll) hilang
+// dari hasil JPG. Di sini kartu laporan dilebarkan sementara ke lebar asli
+// tabelnya (tanpa perlu memutar HP ke landscape) sebelum di-screenshot,
+// supaya JPG-nya selalu utuh, lalu dikembalikan seperti semula.
+async function captureCardAsJpgBlob(cardEl) {
+  if (!cardEl || typeof html2canvas === 'undefined') return null;
   const wraps = Array.from(cardEl.querySelectorAll('.report-table-wrap'));
   const wrapRestores = wraps.map((wrap) => ({
     wrap,
@@ -1795,22 +1795,22 @@ async function downloadCardAsJpg(cardEl, filename, buttonEl) {
     cardEl.style.maxWidth = 'none';
     cardEl.style.width = (naturalWidth + cardPaddingApprox) + 'px';
   }
-
   try {
     const canvas = await html2canvas(cardEl, { scale: 2, backgroundColor: '#ffffff', useCORS: true });
-    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.95));
-    if (blob && navigator.canShare && navigator.share) {
-      try {
-        const file = new File([blob], filename, { type: 'image/jpeg' });
-        if (navigator.canShare({ files: [file] })) {
-          await navigator.share({ files: [file], title: filename });
-          if (buttonEl) buttonEl.innerHTML = originalLabel;
-          return;
-        }
-      } catch (shareErr) {
-        // user cancelled the share sheet, or share failed -- fall back to a direct download
-      }
-    }
+    return await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.95));
+  } finally {
+    cardEl.style.width = prevCardWidth;
+    cardEl.style.maxWidth = prevCardMaxWidth;
+    wrapRestores.forEach((r) => { r.wrap.style.overflow = r.overflow; r.wrap.style.width = r.width; });
+  }
+}
+
+async function downloadCardAsJpg(cardEl, filename, buttonEl) {
+  const originalLabel = buttonEl ? buttonEl.innerHTML : '';
+  if (buttonEl) buttonEl.textContent = 'Menyiapkan...';
+  try {
+    const blob = await captureCardAsJpgBlob(cardEl);
+    if (!blob) return;
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.download = filename;
@@ -1822,9 +1822,40 @@ async function downloadCardAsJpg(cardEl, filename, buttonEl) {
   } catch (e) {
     // best effort -- leave the button label restored below
   } finally {
-    cardEl.style.width = prevCardWidth;
-    cardEl.style.maxWidth = prevCardMaxWidth;
-    wrapRestores.forEach((r) => { r.wrap.style.overflow = r.overflow; r.wrap.style.width = r.width; });
+    if (buttonEl) buttonEl.innerHTML = originalLabel;
+  }
+}
+
+// Langsung buka share sheet HP (WhatsApp, dsb) tanpa perlu unduh dulu.
+async function shareCardAsJpg(cardEl, filename, buttonEl) {
+  const originalLabel = buttonEl ? buttonEl.innerHTML : '';
+  if (buttonEl) buttonEl.textContent = 'Menyiapkan...';
+  try {
+    const blob = await captureCardAsJpgBlob(cardEl);
+    if (!blob) return;
+    const file = new File([blob], filename, { type: 'image/jpeg' });
+    if (navigator.canShare && navigator.share && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: filename });
+      } catch (shareErr) {
+        // pengguna membatalkan share sheet -- tidak apa-apa, tidak perlu fallback
+      }
+      return;
+    }
+    // Browser/perangkat ini tidak mendukung Web Share API dengan file
+    // (umumnya browser desktop) -- unduh saja sebagai jalan keluar terakhir.
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.download = filename;
+    link.href = url;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    alert('Perangkat/browser ini tidak mendukung fitur share langsung, jadi gambar diunduh dulu -- silakan bagikan manual dari galeri.');
+  } catch (e) {
+    // best effort
+  } finally {
     if (buttonEl) buttonEl.innerHTML = originalLabel;
   }
 }
@@ -2824,6 +2855,7 @@ function renderReportOverlay(type) {
       '<div class="review-toolbar-title">' + meta.title + '</div>' +
       '<div class="review-toolbar-actions">' +
         '<button type="button" id="report-close-' + type + '" class="review-btn close">&times; Tutup</button>' +
+        '<button type="button" id="report-share-' + type + '" class="review-btn share">&#128228; Bagikan</button>' +
         '<button type="button" id="report-download-' + type + '" class="review-btn download">&#8681; Unduh JPG</button>' +
       '</div>' +
     '</div>' +
@@ -3015,6 +3047,14 @@ function bindReportOverlayEvents(type) {
     });
   }
 
+  const shareBtn = document.getElementById('report-share-' + type);
+  if (shareBtn) {
+    shareBtn.addEventListener('click', () => {
+      const card = document.getElementById('report-card-' + type);
+      shareCardAsJpg(card, REPORT_META[type].filenamePrefix + '-' + todayISO() + '.jpg', shareBtn);
+    });
+  }
+
   const refresh = () => {
     const fromEl = document.getElementById('report-date-from-' + type);
     const toEl = document.getElementById('report-date-to-' + type);
@@ -3058,6 +3098,7 @@ function renderReviewOverlay() {
       '<div class="review-toolbar-title">Laporan Stok Pallet WS</div>' +
       '<div class="review-toolbar-actions">' +
         '<button type="button" id="review-close" class="review-btn close">&times; Tutup</button>' +
+        '<button type="button" id="review-share" class="review-btn share">&#128228; Bagikan</button>' +
         '<button type="button" id="review-download" class="review-btn download">&#8681; Unduh JPG</button>' +
       '</div>' +
     '</div>' +
@@ -3122,6 +3163,7 @@ function renderReviewBody() {
 function bindReviewEvents() {
   const closeBtn = document.getElementById('review-close');
   const downloadBtn = document.getElementById('review-download');
+  const shareBtn = document.getElementById('review-share');
   const dateToEl = document.getElementById('review-date-to');
   if (closeBtn) {
     closeBtn.addEventListener('click', () => {
@@ -3134,6 +3176,13 @@ function bindReviewEvents() {
       const card = document.getElementById('report-card');
       const range = state.reportRange.stok || { to: todayISO() };
       downloadCardAsJpg(card, 'Laporan-Stok-Pallet-WS-' + range.to + '.jpg', downloadBtn);
+    });
+  }
+  if (shareBtn) {
+    shareBtn.addEventListener('click', () => {
+      const card = document.getElementById('report-card');
+      const range = state.reportRange.stok || { to: todayISO() };
+      shareCardAsJpg(card, 'Laporan-Stok-Pallet-WS-' + range.to + '.jpg', shareBtn);
     });
   }
   if (dateToEl) {
@@ -3258,7 +3307,10 @@ function renderMutasiResults(matched, range) {
             '</div>'
           )).join('') + '</div>'
         )) +
-        '<button type="button" class="btn-link" data-download-mutasi="' + esc(r.nama) + '" data-ukuran="' + esc(r.ukuran || '') + '">&#8681; Unduh JPG Mutasi ' + esc(r.nama) + '</button>' +
+        '<div class="record-actions">' +
+          '<button type="button" class="btn-link" data-share-mutasi="' + esc(r.nama) + '" data-ukuran="' + esc(r.ukuran || '') + '">&#128228; Bagikan Mutasi ' + esc(r.nama) + '</button>' +
+          '<button type="button" class="btn-link" data-download-mutasi="' + esc(r.nama) + '" data-ukuran="' + esc(r.ukuran || '') + '">&#8681; Unduh JPG Mutasi ' + esc(r.nama) + '</button>' +
+        '</div>' +
       '</div>'
     );
   }).join('');
@@ -3290,20 +3342,28 @@ function bindMutasiEvents() {
   const resultsEl = document.getElementById('mutasi-results');
   if (resultsEl) {
     resultsEl.addEventListener('click', (e) => {
-      const btn = e.target.closest('[data-download-mutasi]');
-      if (!btn) return;
-      const nama = btn.getAttribute('data-download-mutasi');
-      const ukuran = btn.getAttribute('data-ukuran') || '';
-      downloadMutasiCustomerJpg(nama, ukuran, state.mutasiRange, btn);
+      const downloadBtn = e.target.closest('[data-download-mutasi]');
+      if (downloadBtn) {
+        const nama = downloadBtn.getAttribute('data-download-mutasi');
+        const ukuran = downloadBtn.getAttribute('data-ukuran') || '';
+        renderMutasiCustomerCard(nama, ukuran, state.mutasiRange, (cardEl, filename) => downloadCardAsJpg(cardEl, filename, downloadBtn));
+        return;
+      }
+      const shareBtn = e.target.closest('[data-share-mutasi]');
+      if (shareBtn) {
+        const nama = shareBtn.getAttribute('data-share-mutasi');
+        const ukuran = shareBtn.getAttribute('data-ukuran') || '';
+        renderMutasiCustomerCard(nama, ukuran, state.mutasiRange, (cardEl, filename) => shareCardAsJpg(cardEl, filename, shareBtn));
+      }
     });
   }
 }
 
-// Renders a single-customer letterhead-style report card off-screen, screenshots
-// it as a JPG (reusing the same download/share flow as the other resumes),
-// then cleans up -- so the on-screen search-result card itself doesn't need
-// to carry the full report styling.
-async function downloadMutasiCustomerJpg(nama, ukuran, range, buttonEl) {
+// Renders a single-customer letterhead-style report card off-screen, then
+// hands it to the given action (download or share) as a JPG, then cleans up
+// -- so the on-screen search-result card itself doesn't need to carry the
+// full report styling.
+async function renderMutasiCustomerCard(nama, ukuran, range, action) {
   const detail = computeMutasiDetail(nama, range.from, range.to);
   const summaryRow = computeMutasiReport(range.from, range.to).rows.find((r) => normKey(r.nama) === normKey(nama));
   const stokAwal = summaryRow ? summaryRow.stokAwal : 0;
@@ -3343,7 +3403,7 @@ async function downloadMutasiCustomerJpg(nama, ukuran, range, buttonEl) {
   const cardEl = temp.querySelector('.report-card');
   const safeName = nama.replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '');
   try {
-    await downloadCardAsJpg(cardEl, 'Mutasi-Pallet-' + safeName + '-' + today + '.jpg', buttonEl);
+    await action(cardEl, 'Mutasi-Pallet-' + safeName + '-' + today + '.jpg');
   } finally {
     document.body.removeChild(temp);
   }
