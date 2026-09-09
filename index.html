@@ -538,6 +538,12 @@ button, .card, .stat-card, .record-row, .field-input, .tab-btn { transition: tra
    discroll horizontal supaya tidak ada kolom yang hilang/terpotong tanpa
    harus memutar layar ke landscape -- tinggal geser ke samping. */
 .report-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.sync-diff-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12.5px; }
+.sync-diff-table th, .sync-diff-table td { padding: 8px 6px; border-bottom: 1px solid #EEF0F6; text-align: left; }
+.sync-diff-table td.num, .sync-diff-table th.num { text-align: right; font-family: 'Courier New', monospace; }
+.sync-diff-table td.delta-pos { color: #2F8F5B; font-weight: 700; }
+.sync-diff-table td.delta-neg { color: #C4551C; font-weight: 700; }
+.sync-summary { margin-top: 10px; padding: 10px 12px; border-radius: 10px; background: #F3F5FA; font-size: 13px; }
 .report-table th {
   background: #344DA1; color: #FFFFFF; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.02em;
   padding: 6px 5px; text-align: left; white-space: nowrap;
@@ -568,6 +574,7 @@ button, .card, .stat-card, .record-row, .field-input, .tab-btn { transition: tra
 .report-foot { margin-top: 14px; font-size: 10px; color: #9AA3BE; text-align: center; }
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
@@ -936,6 +943,51 @@ async function saveBaseline(nama, osQty, stokQty) {
   STOK_AWAL[namaTrim] = stok;
   render();
   return { ok: true };
+}
+
+// ---------------- Sinkronkan OS Awal dari file Excel ----------------
+// Membaca sheet OS bulanan (format "OS SEP 2026" dsb: kolom B=Nama,
+// E=OS Awal), lalu membandingkan dengan OS_AWAL yang sedang dipakai
+// aplikasi. Hanya OS Awal yang disentuh -- Stok Awal/Stok Palet WS
+// sengaja tidak diimpor karena datanya sudah live dihitung dari
+// transaksi produksi & keluar di aplikasi ini, bukan dari Excel.
+function parseOsAwalFromWorkbook(workbook) {
+  const sheetName = workbook.SheetNames.find((n) => /os/i.test(n)) || workbook.SheetNames[0];
+  const sheet = workbook.Sheets[sheetName];
+  const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null });
+  const result = [];
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row) continue;
+    const no = row[0];
+    const nama = row[1];
+    const osAwal = row[4];
+    if (typeof nama !== 'string' || !nama.trim()) continue;
+    if (/^total|^target|^rekap/i.test(nama.trim())) continue;
+    if (typeof no !== 'number') continue; // baris data sesungguhnya selalu punya nomor urut
+    result.push({ nama: nama.trim(), osAwal: Math.max(0, Math.round(Number(osAwal) || 0)) });
+  }
+  return { sheetName, rows: result };
+}
+
+function computeOsAwalDiff(excelRows) {
+  const diffs = [];
+  excelRows.forEach((r) => {
+    const key = normKey(r.nama);
+    const existingKey = Object.keys(OS_AWAL).find((k) => normKey(k) === key);
+    const current = existingKey ? (OS_AWAL[existingKey] || 0) : 0;
+    if (current !== r.osAwal) {
+      diffs.push({ nama: existingKey || r.nama, current, excel: r.osAwal, delta: r.osAwal - current });
+    }
+  });
+  return diffs;
+}
+
+async function applyOsAwalSync(diffs) {
+  const results = await Promise.all(diffs.map((d) => sb.from('os_awal').upsert({ nama: d.nama, qty: d.excel }, { onConflict: 'nama' })));
+  const failed = results.filter((r) => r.error);
+  diffs.forEach((d) => { if (!results[diffs.indexOf(d)].error) OS_AWAL[d.nama] = d.excel; });
+  return { ok: failed.length === 0, failedCount: failed.length };
 }
 
 // ---------------- Saved truck plate list ----------------
@@ -3802,6 +3854,13 @@ function renderSettingsSection(key) {
           '<div class="field"><label class="field-label">Stok Awal (pcs)</label><input type="number" min="0" id="baseline-stok" class="field-input mono" placeholder="0"></div>' +
           '<button type="button" id="baseline-save" class="btn-primary">&#10003; Simpan Saldo Awal</button>' +
         '</div>' +
+      '</div>' +
+      '<div class="card">' +
+        '<div class="card-head"><div class="card-head-icon">&#128260;</div><div><div class="card-title">Sinkronkan OS Awal dari Excel</div><div class="card-subtitle">Bandingkan kolom OS Awal di sheet Excel dengan data di aplikasi, lalu terapkan sekaligus</div></div></div>' +
+        '<div id="baseline-sync-msg" class="settings-msg" style="display:none;"></div>' +
+        '<div class="field"><label class="field-label">Upload file Excel (.xlsx)</label><input type="file" id="baseline-sync-file" accept=".xlsx,.xls" class="field-input"></div>' +
+        '<div class="report-note">Hanya kolom <b>OS Awal</b> yang disinkronkan. Stok Palet WS tidak disentuh karena datanya sudah live dari aplikasi ini.</div>' +
+        '<div id="baseline-sync-result"></div>' +
       '</div>'
     ),
     team: (
@@ -3962,6 +4021,7 @@ function bindSettingsEvents() {
 
   loadTeamMembers();
   bindBaselineForm();
+  bindBaselineSyncEvents();
   bindTruckList();
 
   const logoutBtn = document.getElementById('settings-logout');
@@ -4093,6 +4153,77 @@ function bindBaselineForm() {
       return;
     }
     showSettingsMsg('baseline-msg', 'Saldo awal untuk ' + nama.trim() + ' berhasil disimpan.', false);
+  });
+}
+
+function renderOsAwalDiffResult(diffs, sheetName) {
+  if (diffs.length === 0) {
+    return '<div class="sync-summary">&#10003; Sudah cocok semua -- tidak ada perbedaan OS Awal antara sheet "' + esc(sheetName) + '" dan aplikasi.</div>';
+  }
+  const totalDelta = diffs.reduce((s, d) => s + d.delta, 0);
+  return (
+    '<div class="sync-summary">Ditemukan <b>' + diffs.length + ' customer</b> yang OS Awal-nya beda (dari sheet "' + esc(sheetName) + '"), total selisih <b>' + (totalDelta > 0 ? '+' : '') + totalDelta + ' pcs</b>.</div>' +
+    '<div class="report-table-wrap"><table class="sync-diff-table">' +
+      '<thead><tr><th>Nama Customer</th><th class="num">Di App</th><th class="num">Di Excel</th><th class="num">Selisih</th></tr></thead>' +
+      '<tbody>' +
+        diffs.map((d) => (
+          '<tr><td>' + esc(d.nama) + '</td><td class="num">' + fmtNum(d.current) + '</td><td class="num">' + fmtNum(d.excel) + '</td>' +
+          '<td class="num ' + (d.delta > 0 ? 'delta-pos' : 'delta-neg') + '">' + (d.delta > 0 ? '+' : '') + fmtNum(d.delta) + '</td></tr>'
+        )).join('') +
+      '</tbody>' +
+    '</table></div>' +
+    '<button type="button" id="baseline-sync-apply" class="btn-primary" style="margin-top:10px;">&#10003; Terapkan Semua Perubahan (' + diffs.length + ')</button>'
+  );
+}
+
+function bindBaselineSyncEvents() {
+  const fileInput = document.getElementById('baseline-sync-file');
+  if (!fileInput) return; // baseline section isn't the one currently shown
+
+  let pendingDiffs = [];
+  let pendingSheetName = '';
+
+  fileInput.addEventListener('change', () => {
+    const file = fileInput.files && fileInput.files[0];
+    const resultEl = document.getElementById('baseline-sync-result');
+    if (!file) return;
+    resultEl.innerHTML = '<div class="sync-summary">&#8635; Membaca file...</div>';
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const workbook = XLSX.read(e.target.result, { type: 'array' });
+        const parsed = parseOsAwalFromWorkbook(workbook);
+        if (parsed.rows.length === 0) {
+          resultEl.innerHTML = '';
+          showSettingsMsg('baseline-sync-msg', 'Tidak menemukan baris data OS Awal di file ini. Pastikan formatnya sama seperti sheet OS bulanan (kolom B=Nama, E=OS Awal).', true);
+          return;
+        }
+        pendingDiffs = computeOsAwalDiff(parsed.rows);
+        pendingSheetName = parsed.sheetName;
+        resultEl.innerHTML = renderOsAwalDiffResult(pendingDiffs, pendingSheetName);
+        const applyBtn = document.getElementById('baseline-sync-apply');
+        if (applyBtn) {
+          applyBtn.addEventListener('click', async () => {
+            applyBtn.textContent = 'Menerapkan...';
+            const res = await applyOsAwalSync(pendingDiffs);
+            if (!res.ok) {
+              showSettingsMsg('baseline-sync-msg', 'Sebagian gagal disimpan (' + res.failedCount + ' dari ' + pendingDiffs.length + '). Coba lagi.', true);
+              applyBtn.innerHTML = '&#10003; Terapkan Semua Perubahan (' + pendingDiffs.length + ')';
+              return;
+            }
+            showSettingsMsg('baseline-sync-msg', pendingDiffs.length + ' OS Awal berhasil disinkronkan.', false);
+            pendingDiffs = [];
+            resultEl.innerHTML = '';
+            fileInput.value = '';
+            render();
+          });
+        }
+      } catch (err) {
+        resultEl.innerHTML = '';
+        showSettingsMsg('baseline-sync-msg', 'Gagal membaca file Excel: ' + err.message, true);
+      }
+    };
+    reader.readAsArrayBuffer(file);
   });
 }
 
