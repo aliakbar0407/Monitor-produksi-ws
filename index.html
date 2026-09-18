@@ -452,6 +452,8 @@ button, .card, .stat-card, .record-row, .field-input, .tab-btn { transition: tra
 .record-actions .btn-link { margin-top: 0; flex: 1; }
 .type-tag { display: inline-block; font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; padding: 1px 6px; border-radius: 5px; margin-right: 4px; }
 .type-tag.po { background: #FCE9D2; color: #B5651A; }
+.type-tag.wh { background: #DCE6FC; color: #2E4090; }
+.field-hint { font-size: 11px; color: #7A8296; margin-top: 5px; line-height: 1.4; }
 .type-tag.produksi { background: #DFF3E6; color: #2F8F5B; }
 .type-tag.keluar { background: #E7ECF8; color: #344DA1; }
 
@@ -1449,7 +1451,7 @@ function computeAggregates() {
     if (!key) return null;
     if (!map[key]) map[key] = {
       nama, ukuran: ukuran || CUSTOMER_MAP[nama] || '',
-      po: 0, produksi: 0, subcont: 0, keluar: 0,
+      po: 0, produksi: 0, produksiWS: 0, subcont: 0, keluar: 0,
       poBulan: 0, produksiBulan: 0, subcontBulan: 0,
       poSebelum: 0, produksiSebelum: 0, subcontSebelum: 0,
     };
@@ -1467,7 +1469,12 @@ function computeAggregates() {
   });
   // Subcont pallets (bought from a subcontractor) are shipped directly to the
   // customer/WH and never pass through our own production or WS stock -- they
-  // only reduce OS. Regular ("sendiri") production is what feeds stok/WS.
+  // only reduce OS. "Produksi WH" is our own production too, so it still
+  // reduces OS like "produksi sendiri" (folded into the same `produksi`
+  // bucket, no separate column) -- but the pallets go straight to the WH
+  // warehouse, not WS, so they're excluded from `produksiWS` (the only field
+  // the Stok Palet WS `stok` formula below actually uses). Only true
+  // "produksi sendiri" feeds WS stock.
   state.produksi.forEach((r) => {
     const k = touch(r.nama, r.ukuran);
     if (!k) return;
@@ -1478,6 +1485,7 @@ function computeAggregates() {
     } else {
       map[k].produksi += qty;
       if (r.tanggal >= monthStart) map[k].produksiBulan += qty; else map[k].produksiSebelum += qty;
+      if (r.sumber !== 'wh') map[k].produksiWS += qty;
     }
   });
   state.keluar.forEach((r) => { const k = touch(r.nama, r.ukuran); if (k) map[k].keluar += Number(r.qty) || 0; });
@@ -1488,8 +1496,10 @@ function computeAggregates() {
     const osAwal = osAwalKey ? OS_AWAL[osAwalKey] : 0;
     const stokAwal = stokAwalKey ? STOK_AWAL[stokAwalKey] : 0;
     // Stok Palet tetap kumulatif sejak awal (tidak reset bulanan) --
-    // hanya breakdown OS Produksi yang di-reset tiap bulan.
-    const stok = stokAwal + it.produksi - it.keluar;
+    // hanya breakdown OS Produksi yang di-reset tiap bulan. Pakai
+    // produksiWS (bukan produksi) supaya "Produksi WH" tidak ikut menambah
+    // stok WS, sesuai instruksi: WH masuk stok WH, bukan stok WS.
+    const stok = stokAwal + it.produksiWS - it.keluar;
     const siapWH = Math.max(0, Math.min(state.readyWH[it.nama] || 0, Math.max(stok, 0)));
     // OS sebagai posisi akhir bulan lalu (kumulatif sampai sebelum tanggal 1
     // bulan berjalan) -- inilah yang otomatis jadi "PO awal bulan" berjalan.
@@ -1528,7 +1538,7 @@ function computeStokReport(to) {
   };
   Object.keys(STOK_AWAL).forEach((nama) => touch(nama, ''));
   state.produksi.forEach((r) => {
-    if (r.sumber === 'subcont' || r.tanggal > to) return;
+    if (r.sumber === 'subcont' || r.sumber === 'wh' || r.tanggal > to) return;
     const k = touch(r.nama, r.ukuran);
     if (k) map[k].produksi += Number(r.qty) || 0;
   });
@@ -1709,7 +1719,7 @@ function computeMutasiReport(from, to) {
   };
   Object.keys(STOK_AWAL).forEach((nama) => touch(nama, ''));
   state.produksi.forEach((r) => {
-    if (r.sumber === 'subcont') return;
+    if (r.sumber === 'subcont' || r.sumber === 'wh') return;
     const k = touch(r.nama, r.ukuran);
     if (!k) return;
     const qty = Number(r.qty) || 0;
@@ -1754,7 +1764,7 @@ function computeMutasiDetail(nama, from, to) {
     byDate[tanggal].keluar += keluar;
   };
   state.produksi.forEach((r) => {
-    if (r.sumber === 'subcont') return;
+    if (r.sumber === 'subcont' || r.sumber === 'wh') return;
     if (normKey(r.nama) !== key || r.tanggal < from || r.tanggal > to) return;
     add(r.tanggal, Number(r.qty) || 0, 0);
   });
@@ -2421,9 +2431,11 @@ function renderProduksiTab() {
           '<div class="field">' +
             '<label class="field-label">Sumber</label>' +
             '<select id="prod-sumber" class="field-input">' +
-              '<option value="sendiri"' + ((!isEdit || editRecord.sumber !== 'subcont') ? ' selected' : '') + '>Produksi Sendiri</option>' +
+              '<option value="sendiri"' + ((!isEdit || (editRecord.sumber !== 'subcont' && editRecord.sumber !== 'wh')) ? ' selected' : '') + '>Produksi Sendiri</option>' +
+              '<option value="wh"' + (isEdit && editRecord.sumber === 'wh' ? ' selected' : '') + '>Produksi WH</option>' +
               '<option value="subcont"' + (isEdit && editRecord.sumber === 'subcont' ? ' selected' : '') + '>Beli dari Subcont</option>' +
             '</select>' +
+            '<div class="field-hint" id="prod-sumber-hint">' + sumberHintText(isEdit ? (editRecord.sumber || 'sendiri') : 'sendiri') + '</div>' +
           '</div>' +
           '<div class="field" id="prod-subcont-wrap" style="' + (isEdit && editRecord.sumber === 'subcont' ? '' : 'display:none;') + '">' +
             '<label class="field-label">Nama Subcont / Supplier</label>' +
@@ -2441,6 +2453,7 @@ function renderProduksiTab() {
       '<div class="sumber-filter-row">' +
         '<button type="button" class="sumber-filter-btn' + (state.produksiSumberFilter === 'semua' ? ' active' : '') + '" data-sumber-filter="semua">Semua</button>' +
         '<button type="button" class="sumber-filter-btn' + (state.produksiSumberFilter === 'sendiri' ? ' active' : '') + '" data-sumber-filter="sendiri">Produksi Sendiri</button>' +
+        '<button type="button" class="sumber-filter-btn' + (state.produksiSumberFilter === 'wh' ? ' active' : '') + '" data-sumber-filter="wh">Produksi WH</button>' +
         '<button type="button" class="sumber-filter-btn' + (state.produksiSumberFilter === 'subcont' ? ' active' : '') + '" data-sumber-filter="subcont">Subcont</button>' +
       '</div>' +
       '<button type="button" id="open-report-produksi" class="btn-review">&#128196; Lihat &amp; Unduh Resume Produksi (JPG)</button>' +
@@ -2449,9 +2462,15 @@ function renderProduksiTab() {
     '</div>'
   );
 }
+function sumberHintText(sumber) {
+  if (sumber === 'wh') return 'Masuk hasil produksi & mengurangi OS, tapi langsung ke stok WH -- tidak menambah Stok Palet WS.';
+  if (sumber === 'subcont') return 'Mengurangi OS, tapi tidak menambah Stok Palet WS (dikirim langsung dari subcont).';
+  return 'Masuk hasil produksi, mengurangi OS, dan menambah Stok Palet WS.';
+}
 function filterBySumber(rows, filter) {
-  if (filter === 'sendiri') return rows.filter((r) => r.sumber !== 'subcont');
+  if (filter === 'sendiri') return rows.filter((r) => (r.sumber || 'sendiri') === 'sendiri');
   if (filter === 'subcont') return rows.filter((r) => r.sumber === 'subcont');
+  if (filter === 'wh') return rows.filter((r) => r.sumber === 'wh');
   return rows;
 }
 function renderProduksiList(rows) {
@@ -2460,7 +2479,7 @@ function renderProduksiList(rows) {
     '<div class="record-list">' + rows.map((r) => (
       '<div class="record-row">' +
         '<div class="record-main">' +
-          '<div class="record-name">' + esc(r.nama) + (r.sumber === 'subcont' ? ' <span class="type-tag po">SUBCONT</span>' : '') + '</div>' +
+          '<div class="record-name">' + esc(r.nama) + (r.sumber === 'subcont' ? ' <span class="type-tag po">SUBCONT</span>' : (r.sumber === 'wh' ? ' <span class="type-tag wh">WH</span>' : '')) + '</div>' +
           '<div class="record-meta">' + esc(r.ukuran || '-') + ' &middot; ' + fmtDate(r.tanggal) + (r.sumber === 'subcont' && r.subcontNama ? ' &middot; dari ' + esc(r.subcontNama) : '') + '</div>' +
           '<div class="record-meta small">' + (actorLabel(r).replace(/^ &middot; /, '') || '-') + '</div>' +
           (r.catatan ? '<div class="record-note">' + esc(r.catatan) + '</div>' : '') +
@@ -3418,7 +3437,7 @@ async function renderMutasiCustomerCard(nama, ukuran, range, action) {
 function buildActivityFeed() {
   return [
     ...state.poIn.map((r) => Object.assign({}, r, { _type: 'po', _label: 'PO Masuk', _ts: r.loggedAt || (r.tanggal + 'T00:00:00') })),
-    ...state.produksi.map((r) => Object.assign({}, r, { _type: r.sumber === 'subcont' ? 'po' : 'produksi', _label: r.sumber === 'subcont' ? 'Subcont' : 'Produksi', _ts: r.loggedAt || (r.tanggal + 'T00:00:00') })),
+    ...state.produksi.map((r) => Object.assign({}, r, { _type: r.sumber === 'subcont' ? 'po' : 'produksi', _label: r.sumber === 'subcont' ? 'Subcont' : (r.sumber === 'wh' ? 'Produksi WH' : 'Produksi'), _ts: r.loggedAt || (r.tanggal + 'T00:00:00') })),
     ...state.keluar.map((r) => Object.assign({}, r, { _type: 'keluar', _label: 'Keluar', _ts: r.loggedAt || (r.tanggal + 'T00:00:00') })),
   ].sort((a, b) => (a._ts < b._ts ? 1 : -1));
 }
@@ -4384,9 +4403,11 @@ function bindProduksiEvents() {
 
   const sumberSelect = document.getElementById('prod-sumber');
   const subcontWrap = document.getElementById('prod-subcont-wrap');
+  const sumberHint = document.getElementById('prod-sumber-hint');
   if (sumberSelect && subcontWrap) {
     sumberSelect.addEventListener('change', () => {
       subcontWrap.style.display = sumberSelect.value === 'subcont' ? '' : 'none';
+      if (sumberHint) sumberHint.textContent = sumberHintText(sumberSelect.value);
     });
   }
 
