@@ -934,7 +934,7 @@ function subscribeRealtime() {
 async function saveBaseline(nama, osQty, stokQty) {
   const namaTrim = nama.trim();
   if (!namaTrim) return { ok: false, error: 'Pilih atau ketik nama customer dulu.' };
-  const os = Math.max(0, Number(osQty) || 0);
+  const os = Number(osQty) || 0; // boleh negatif: kelebihan produksi/subcont sebelum tracking dimulai
   const stok = Math.max(0, Number(stokQty) || 0);
 
   const [osRes, stokRes] = await Promise.all([
@@ -970,7 +970,7 @@ function parseOsAwalFromWorkbook(workbook) {
     if (typeof nama !== 'string' || !nama.trim()) continue;
     if (/^total|^target|^rekap/i.test(nama.trim())) continue;
     if (typeof no !== 'number') continue; // baris data sesungguhnya selalu punya nomor urut
-    result.push({ nama: nama.trim(), osAwal: Math.max(0, Math.round(Number(osAwal) || 0)) });
+    result.push({ nama: nama.trim(), osAwal: Math.round(Number(osAwal) || 0) });
   }
   return { sheetName, rows: result };
 }
@@ -3929,7 +3929,7 @@ function renderSettingsSection(key) {
         '<div id="baseline-msg" class="settings-msg" style="display:none;"></div>' +
         '<div class="form-grid">' +
           comboMarkup('baseline-nama') +
-          '<div class="field"><label class="field-label">OS Awal (pcs kekurangan)</label><input type="number" min="0" id="baseline-os" class="field-input mono" placeholder="0"></div>' +
+          '<div class="field"><label class="field-label">OS Awal (pcs kekurangan, isi minus jika sudah kelebihan produksi)</label><input type="number" id="baseline-os" class="field-input mono" placeholder="0"></div>' +
           '<div class="field"><label class="field-label">Stok Awal (pcs)</label><input type="number" min="0" id="baseline-stok" class="field-input mono" placeholder="0"></div>' +
           '<button type="button" id="baseline-save" class="btn-primary">&#10003; Simpan Saldo Awal</button>' +
         '</div>' +
