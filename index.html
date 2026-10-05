@@ -700,6 +700,12 @@ const state = {
     keluar: { from: firstDayOfMonthISO(), to: todayISO() },
     subcont: { from: firstDayOfMonthISO(), to: todayISO() },
   },
+  // Sort mode per resume/report tab. 'az' is the shared default (alphabetical
+  // by customer name) -- Resume Hasil Produksi used to default to qty
+  // descending, now it defaults to az like the others. Each tab also offers
+  // 'za', 'besar' (qty/value descending) and 'kecil' (ascending); poin keeps
+  // an extra 'tanggal' (chronological) option since it lists raw PO entries.
+  reportSort: { poin: 'tanggal', produksi: 'az', os: 'az', keluar: 'az', stok: 'az' },
   editing: { poin: null, produksi: null, keluar: null },
   dateFilter: { poin: '', produksi: '', keluar: '' }, // yyyy-mm-dd or '' = show all, used to narrow the history list for editing
   produksiSumberFilter: 'semua', // 'semua' | 'sendiri' | 'subcont' -- filters the Riwayat Produksi list only
@@ -729,7 +735,7 @@ let STOK_AWAL = {};
 function poInToDb(r) {
   return {
     id: r.id, tanggal: r.tanggal, nama: r.nama, ukuran: r.ukuran || '', qty: Number(r.qty) || 0,
-    no_po: r.noPo || '', tgl_kirim: r.tglKirim || null, catatan: r.catatan || '',
+    no_po: r.noPo || '', no_reff: r.noReff || '', tgl_kirim: r.tglKirim || null, catatan: r.catatan || '',
     logged_at: r.loggedAt || new Date().toISOString(),
     created_by: r.created_by || (state.account ? state.account.nama : ''),
     updated_by: r.updated_by || (state.account ? state.account.nama : ''),
@@ -738,7 +744,7 @@ function poInToDb(r) {
 function dbToPoIn(row) {
   return {
     id: row.id, tanggal: row.tanggal, nama: row.nama, ukuran: row.ukuran || '', qty: row.qty,
-    noPo: row.no_po || '', tglKirim: row.tgl_kirim || '', catatan: row.catatan || '',
+    noPo: row.no_po || '', noReff: row.no_reff || '', tglKirim: row.tgl_kirim || '', catatan: row.catatan || '',
     loggedAt: row.logged_at || '', created_by: row.created_by || '', updated_by: row.updated_by || '',
   };
 }
@@ -1520,6 +1526,40 @@ function computeAggregates() {
 // ---------------- Period reports (PO Masuk / Produksi / OS / Keluar) ----------------
 function openReport(type) { state.reportOpen[type] = true; render(); }
 
+// ---------------- Shared row-sorting for all resume/report tabs ----------------
+// Compute functions below return rows in their natural order; the actual
+// display order is applied here at render time from state.reportSort[type],
+// so switching the dropdown never needs to re-run the aggregation.
+const REPORT_SORT_OPTIONS = {
+  poin: [['tanggal', 'Tanggal'], ['az', 'Nama A-Z'], ['za', 'Nama Z-A'], ['besar', 'Qty Terbesar'], ['kecil', 'Qty Terkecil']],
+  produksi: [['az', 'Nama A-Z'], ['za', 'Nama Z-A'], ['besar', 'Qty Terbesar'], ['kecil', 'Qty Terkecil']],
+  os: [['az', 'Nama A-Z'], ['za', 'Nama Z-A'], ['besar', 'OS Terbesar'], ['kecil', 'OS Terkecil']],
+  keluar: [['az', 'Nama A-Z'], ['za', 'Nama Z-A'], ['besar', 'Sisa Terbesar'], ['kecil', 'Sisa Terkecil']],
+  stok: [['az', 'Nama A-Z'], ['za', 'Nama Z-A'], ['besar', 'Stok Terbesar'], ['kecil', 'Stok Terkecil']],
+};
+const REPORT_SORT_VALUE_FIELD = { poin: 'qty', produksi: 'qty', os: 'os', keluar: 'sisaStok', stok: 'stok' };
+
+function sortReportRows(rows, mode, valueField) {
+  const arr = rows.slice();
+  switch (mode) {
+    case 'za': arr.sort((a, b) => (b.nama || '').localeCompare(a.nama || '')); break;
+    case 'besar': arr.sort((a, b) => (Number(b[valueField]) || 0) - (Number(a[valueField]) || 0)); break;
+    case 'kecil': arr.sort((a, b) => (Number(a[valueField]) || 0) - (Number(b[valueField]) || 0)); break;
+    case 'tanggal': arr.sort((a, b) => (a.tanggal < b.tanggal ? -1 : a.tanggal > b.tanggal ? 1 : 0)); break;
+    default: arr.sort((a, b) => (a.nama || '').localeCompare(b.nama || '')); // 'az'
+  }
+  return arr;
+}
+
+// Renders the "Urutkan" dropdown shown on every resume/report tab.
+function reportSortField(type, idPrefix) {
+  const opts = REPORT_SORT_OPTIONS[type] || [];
+  const current = state.reportSort[type] || opts[0][0];
+  return '<div class="field"><label class="field-label">Urutkan</label><select id="' + idPrefix + '-sort-' + type + '" class="field-input">' +
+    opts.map((o) => '<option value="' + o[0] + '"' + (o[0] === current ? ' selected' : '') + '>' + o[1] + '</option>').join('') +
+    '</select></div>';
+}
+
 // Stok Palet WS "as of" a chosen date -- reuses the exact same stok formula
 // as computeAggregates() (stokAwal + produksi sendiri - keluar), but only
 // counting produksi/keluar rows up to and including that date, so the
@@ -1556,8 +1596,7 @@ function computeStokReport(to) {
       const siapWH = Math.max(0, Math.min(state.readyWH[it.nama] || 0, Math.max(stok, 0)));
       return Object.assign({}, it, { stok, siapWH, belumWH: Math.max(stok, 0) - siapWH });
     })
-    .filter((r) => r.stok > 0)
-    .sort((a, b) => a.nama.localeCompare(b.nama));
+    .filter((r) => r.stok > 0);
 }
 function closeReport(type) { state.reportOpen[type] = false; render(); }
 function updateReportRange(type, from, to) {
@@ -1568,8 +1607,7 @@ function updateReportRange(type, from, to) {
 
 function computePoinReport(from, to) {
   const rows = state.poIn
-    .filter((r) => r.tanggal >= from && r.tanggal <= to)
-    .sort((a, b) => (a.tanggal < b.tanggal ? -1 : a.tanggal > b.tanggal ? 1 : 0));
+    .filter((r) => r.tanggal >= from && r.tanggal <= to);
   const totalCustomer = new Set(rows.map((r) => r.nama)).size;
   const totalQty = rows.reduce((s, r) => s + (Number(r.qty) || 0), 0);
   const totalPo = new Set(rows.filter((r) => r.noPo).map((r) => r.noPo)).size;
@@ -1587,7 +1625,7 @@ function computeProduksiReport(from, to) {
     if (!map[key]) map[key] = { nama: r.nama, ukuran: r.ukuran || CUSTOMER_MAP[r.nama] || '', qty: 0 };
     map[key].qty += Number(r.qty) || 0;
   });
-  const rows = Object.values(map).sort((a, b) => b.qty - a.qty);
+  const rows = Object.values(map);
   const totalQty = rows.reduce((s, r) => s + r.qty, 0);
   return { rows, totalJenis: rows.length, totalQty };
 }
@@ -1678,14 +1716,18 @@ function computeOsReport(to) {
   });
   // Resume OS Produksi only *lists* customers still owed production (os > 0)
   // -- customers already fully covered (os === 0) or over-produced (os < 0)
-  // are considered settled and are left off the table. But the three totals
-  // above the table (PO In / Produksi+Subcont / Kekurangan) must all come
-  // from the same full population (allRows) so they stay arithmetically
-  // consistent: Total PO In - Total Produksi+Subcont = Total Kekurangan.
-  const rows = allRows.filter((r) => r.os > 0).sort((a, b) => a.nama.localeCompare(b.nama));
+  // are considered settled and are left off the table.
+  // Total PO In and Total Produksi+Subcont still come from the full
+  // population (allRows), since those are genuine running totals.
+  // Total Kekurangan, however, must NOT net a surplus from one customer
+  // against a shortage at another -- each customer's pallet spec is
+  // specific to them, so one customer's over-production can't cover
+  // another customer's shortfall. It's summed only over rows that are
+  // actually short (os > 0), matching what's shown in the table.
+  const rows = allRows.filter((r) => r.os > 0);
   const totalPo = allRows.reduce((s, r) => s + r.po, 0);
   const totalProduksiSubcont = allRows.reduce((s, r) => s + r.produksi + r.subcont, 0);
-  const totalKurang = allRows.reduce((s, r) => s + r.os, 0);
+  const totalKurang = rows.reduce((s, r) => s + r.os, 0);
   return { rows, totalPo, totalProduksiSubcont, totalKurang, itemKurang: rows.length };
 }
 
@@ -1741,8 +1783,7 @@ function computeMutasiReport(from, to) {
     const sisaStok = stokAwal + it.masuk - it.keluar;
     return { nama: it.nama, ukuran: it.ukuran, stokAwal, masuk: it.masuk, keluar: it.keluar, sisaStok };
   })
-    .filter((r) => r.stokAwal !== 0 || r.masuk !== 0 || r.keluar !== 0 || r.sisaStok !== 0)
-    .sort((a, b) => a.nama.localeCompare(b.nama));
+    .filter((r) => r.stokAwal !== 0 || r.masuk !== 0 || r.keluar !== 0 || r.sisaStok !== 0);
   return {
     rows,
     totalStokAwal: rows.reduce((s, r) => s + r.stokAwal, 0),
@@ -2352,11 +2393,40 @@ function dateFilterMarkup(idPrefix, value) {
   );
 }
 
+// ---------------- No. Reff helpers ----------------
+// Standard PO document reference format: {nomor urut}.{AC|AD}/MDP-SBY/{bulan
+// romawi}/{tahun} -- e.g. "200.AC/MDP-SBY/X/2026". Only the running number
+// and the AC/AD type are typed by hand; the roman month and year are always
+// derived from the PO's own Tanggal PO so they can never be typed wrong or
+// drift out of sync with the actual date.
+const ROMAN_MONTHS = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI', 'XII'];
+function romanMonth(m) { return ROMAN_MONTHS[(Number(m) || 1) - 1] || 'I'; }
+
+function buildNoReff(nomor, jenis, tanggalISO) {
+  const n = String(nomor || '').trim();
+  if (!n) return '';
+  const j = jenis === 'AD' ? 'AD' : 'AC';
+  const d = tanggalISO ? new Date(tanggalISO + 'T00:00:00') : new Date();
+  return n + '.' + j + '/MDP-SBY/' + romanMonth(d.getMonth() + 1) + '/' + d.getFullYear();
+}
+
+// Splits a stored No. Reff string back into its editable parts (running
+// number + AC/AD) for prefilling the edit form. The roman month/year are
+// intentionally not parsed back out -- the live preview always re-derives
+// them from the current Tanggal PO field instead, so an edited date is
+// immediately reflected rather than showing a stale month/year.
+function parseNoReff(str) {
+  const m = /^(\d+)\.(AC|AD)\//.exec(String(str || '').trim());
+  return m ? { nomor: m[1], jenis: m[2] } : { nomor: '', jenis: 'AC' };
+}
+
 // ---------------- PO Masuk ----------------
 function renderPoInTab() {
   const editId = state.editing.poin;
   const editRecord = editId ? state.poIn.find((r) => r.id === editId) : null;
   const isEdit = !!editRecord;
+  const reffParts = isEdit ? parseNoReff(editRecord.noReff) : { nomor: '', jenis: 'AC' };
+  const reffTanggal = isEdit ? editRecord.tanggal : todayISO();
 
   return (
     '<div class="tab-body">' +
@@ -2373,6 +2443,17 @@ function renderPoInTab() {
           comboMarkup('poin-nama', isEdit ? editRecord.nama : '', isEdit ? editRecord.ukuran : '') +
           '<div class="field"><label class="field-label">Qty (pcs)</label><input type="number" min="0" id="poin-qty" class="field-input mono" placeholder="0" value="' + esc(isEdit ? editRecord.qty : '') + '"></div>' +
           '<div class="field"><label class="field-label">Nomor PO</label><input id="poin-nopo" class="field-input" placeholder="Opsional" value="' + esc(isEdit ? editRecord.noPo : '') + '"></div>' +
+          '<div class="field">' +
+            '<label class="field-label">No. Reff</label>' +
+            '<div class="reff-input-row" style="display:flex;gap:8px;">' +
+              '<input type="number" min="0" id="poin-reffno" class="field-input mono" placeholder="200" style="flex:1;" value="' + esc(reffParts.nomor) + '">' +
+              '<select id="poin-reffjenis" class="field-input" style="flex:0 0 84px;">' +
+                '<option value="AC"' + (reffParts.jenis === 'AC' ? ' selected' : '') + '>AC</option>' +
+                '<option value="AD"' + (reffParts.jenis === 'AD' ? ' selected' : '') + '>AD</option>' +
+              '</select>' +
+            '</div>' +
+            '<div class="field-hint" id="poin-reff-preview">' + esc(buildNoReff(reffParts.nomor, reffParts.jenis, reffTanggal) || ('Isi nomor urut, contoh: 200.AC/MDP-SBY/' + romanMonth(new Date(reffTanggal + 'T00:00:00').getMonth() + 1) + '/' + new Date(reffTanggal + 'T00:00:00').getFullYear())) + '</div>' +
+          '</div>' +
           '<div class="field"><label class="field-label">Tanggal Kirim Diminta</label><input type="date" id="poin-tglkirim" class="field-input" value="' + esc(isEdit ? editRecord.tglKirim : '') + '"></div>' +
           '<div class="field"><label class="field-label">Catatan</label><input id="poin-catatan" class="field-input" placeholder="Opsional" value="' + esc(isEdit ? editRecord.catatan : '') + '"></div>' +
           '<div class="form-actions">' +
@@ -2395,7 +2476,7 @@ function renderPoInList(rows) {
       '<div class="record-row">' +
         '<div class="record-main">' +
           '<div class="record-name">' + esc(r.nama) + '</div>' +
-          '<div class="record-meta">' + esc(r.ukuran || '-') + ' &middot; ' + fmtDate(r.tanggal) + (r.noPo ? ' &middot; PO ' + esc(r.noPo) : '') + '</div>' +
+          '<div class="record-meta">' + esc(r.ukuran || '-') + ' &middot; ' + fmtDate(r.tanggal) + (r.noPo ? ' &middot; PO ' + esc(r.noPo) : '') + (r.noReff ? ' &middot; Reff ' + esc(r.noReff) : '') + '</div>' +
           '<div class="record-meta small">' + (actorLabel(r).replace(/^ &middot; /, '') || '-') + '</div>' +
           (r.tglKirim ? '<div class="record-meta">Kirim: ' + fmtDate(r.tglKirim) + '</div>' : '') +
           (r.catatan ? '<div class="record-note">' + esc(r.catatan) + '</div>' : '') +
@@ -2883,6 +2964,7 @@ function renderReportOverlay(type) {
         '<div class="card">' +
           '<div class="card-head"><div class="card-head-icon">&#128197;</div><div><div class="card-title">Pilih Periode</div><div class="card-subtitle">Laporan akan diperbarui otomatis</div></div></div>' +
           dateControls +
+          (REPORT_SORT_OPTIONS[type] ? reportSortField(type, 'report') : '') +
         '</div>' +
         '<div id="report-body-' + type + '">' + renderReportBody(type) + '</div>' +
       '</div>' +
@@ -2922,6 +3004,7 @@ function reportCardClose(today) {
 function renderPoinReportBody() {
   const range = state.reportRange.poin;
   const d = computePoinReport(range.from, range.to);
+  const sortedRows = sortReportRows(d.rows, state.reportSort.poin, REPORT_SORT_VALUE_FIELD.poin);
   const today = todayISO();
   return (
     reportCardOpen('poin', 'Resume PO Masuk', 'Periode: ' + periodLabel(range.from, range.to)) +
@@ -2932,11 +3015,11 @@ function renderPoinReportBody() {
     '</div>' +
     (d.nearestKirim ? '<div class="report-note">Jadwal kirim terdekat: ' + fmtDate(d.nearestKirim) + '</div>' : '') +
     '<div class="report-table-wrap">' +
-    '<table class="report-table"><thead><tr><th>Tanggal</th><th>Nama Customer</th><th>Ukuran</th><th class="num">Qty</th><th>No PO</th><th>Kirim</th></tr></thead><tbody>' +
-      (d.rows.length ? d.rows.map((r) => (
+    '<table class="report-table"><thead><tr><th>Tanggal</th><th>Nama Customer</th><th>Ukuran</th><th class="num">Qty</th><th>No PO</th><th>No. Reff</th><th>Kirim</th></tr></thead><tbody>' +
+      (sortedRows.length ? sortedRows.map((r) => (
         '<tr><td>' + fmtDate(r.tanggal) + '</td><td>' + esc(r.nama) + '</td><td>' + esc(r.ukuran || '-') + '</td>' +
-        '<td class="num qty">' + fmtNum(r.qty) + '</td><td>' + esc(r.noPo || '-') + '</td><td>' + (r.tglKirim ? fmtDate(r.tglKirim) : '-') + '</td></tr>'
-      )).join('') : '<tr><td colspan="6" style="text-align:center;color:#9AA3BE;padding:16px;">Tidak ada PO masuk pada periode ini.</td></tr>') +
+        '<td class="num qty">' + fmtNum(r.qty) + '</td><td>' + esc(r.noPo || '-') + '</td><td>' + esc(r.noReff || '-') + '</td><td>' + (r.tglKirim ? fmtDate(r.tglKirim) : '-') + '</td></tr>'
+      )).join('') : '<tr><td colspan="7" style="text-align:center;color:#9AA3BE;padding:16px;">Tidak ada PO masuk pada periode ini.</td></tr>') +
     '</tbody></table></div>' +
     reportCardClose(today)
   );
@@ -2946,6 +3029,7 @@ function renderPoinReportBody() {
 function renderProduksiReportBody() {
   const range = state.reportRange.produksi;
   const d = computeProduksiReport(range.from, range.to);
+  const sortedRows = sortReportRows(d.rows, state.reportSort.produksi, REPORT_SORT_VALUE_FIELD.produksi);
   const today = todayISO();
   return (
     reportCardOpen('produksi', 'Resume Hasil Produksi', 'Periode: ' + periodLabel(range.from, range.to)) +
@@ -2955,7 +3039,7 @@ function renderProduksiReportBody() {
     '</div>' +
     '<div class="report-table-wrap">' +
     '<table class="report-table"><thead><tr><th>Nama Customer</th><th>Ukuran</th><th class="num">Qty Diproduksi</th></tr></thead><tbody>' +
-      (d.rows.length ? d.rows.map((r) => (
+      (sortedRows.length ? sortedRows.map((r) => (
         '<tr><td>' + esc(r.nama) + '</td><td>' + esc(r.ukuran || '-') + '</td><td class="num qty">' + fmtNum(r.qty) + '</td></tr>'
       )).join('') : '<tr><td colspan="3" style="text-align:center;color:#9AA3BE;padding:16px;">Tidak ada produksi pada periode ini.</td></tr>') +
     '</tbody>' +
@@ -3003,6 +3087,7 @@ function renderSubcontReportBody() {
 function renderOsReportBody() {
   const range = state.reportRange.os;
   const d = computeOsReport(range.to);
+  const sortedRows = sortReportRows(d.rows, state.reportSort.os, REPORT_SORT_VALUE_FIELD.os);
   const today = todayISO();
   return (
     reportCardOpen('os', 'Resume OS Produksi', 'Data per tanggal: ' + fmtDateLong(range.to)) +
@@ -3013,7 +3098,7 @@ function renderOsReportBody() {
     '</div>' +
     '<div class="report-table-wrap">' +
     '<table class="report-table"><thead><tr><th>Nama Customer</th><th>Ukuran</th><th class="num">PO</th><th class="num">Prod.</th><th class="num">Subc.</th><th class="num">OS</th></tr></thead><tbody>' +
-      (d.rows.length ? d.rows.map((r) => (
+      (sortedRows.length ? sortedRows.map((r) => (
         '<tr><td>' + esc(r.nama) + '</td><td>' + esc(r.ukuran || '-') + '</td><td class="num qty">' + fmtNum(r.po) + '</td>' +
         '<td class="num qty">' + fmtNum(r.produksi) + '</td><td class="num qty">' + fmtNum(r.subcont) + '</td>' +
         '<td class="num qty ' + (r.os > 0 ? 'belum' : 'siap') + '">' + (r.os > 0 ? '-' : '+') + fmtNum(Math.abs(r.os)) + '</td></tr>'
@@ -3027,6 +3112,7 @@ function renderOsReportBody() {
 function renderKeluarReportBody() {
   const range = state.reportRange.keluar;
   const d = computeMutasiReport(range.from, range.to);
+  const sortedRows = sortReportRows(d.rows, state.reportSort.keluar, REPORT_SORT_VALUE_FIELD.keluar);
   const today = todayISO();
   return (
     reportCardOpen('keluar', 'Laporan Mutasi Pallet', 'Periode: ' + periodLabel(range.from, range.to)) +
@@ -3038,7 +3124,7 @@ function renderKeluarReportBody() {
     '<div class="report-note">Sisa stok akhir periode: ' + fmtNum(d.totalSisa) + ' pcs</div>' +
     '<div class="report-table-wrap">' +
     '<table class="report-table"><thead><tr><th>Nama Customer</th><th>Ukuran</th><th class="num">Awal</th><th class="num">Masuk</th><th class="num">Keluar</th><th class="num">Sisa</th></tr></thead><tbody>' +
-      (d.rows.length ? d.rows.map((r) => (
+      (sortedRows.length ? sortedRows.map((r) => (
         '<tr><td>' + esc(r.nama) + '</td><td>' + esc(r.ukuran || '-') + '</td>' +
         '<td class="num qty">' + fmtNum(r.stokAwal) + '</td>' +
         '<td class="num qty siap">+' + fmtNum(r.masuk) + '</td>' +
@@ -3086,6 +3172,15 @@ function bindReportOverlayEvents(type) {
   const toEl = document.getElementById('report-date-to-' + type);
   if (fromEl) fromEl.addEventListener('change', refresh);
   if (toEl) toEl.addEventListener('change', refresh);
+
+  const sortEl = document.getElementById('report-sort-' + type);
+  if (sortEl) {
+    sortEl.addEventListener('change', () => {
+      state.reportSort[type] = sortEl.value;
+      const body = document.getElementById('report-body-' + type);
+      if (body) body.innerHTML = renderReportBody(type);
+    });
+  }
 }
 
 const BULAN_ID = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
@@ -3126,6 +3221,7 @@ function renderReviewOverlay() {
         '<div class="card">' +
           '<div class="card-head"><div class="card-head-icon">&#128197;</div><div><div class="card-title">Pilih Periode</div><div class="card-subtitle">Laporan akan diperbarui otomatis</div></div></div>' +
           '<div class="field"><label class="field-label">Data Stok Sampai Tanggal</label><input type="date" id="review-date-to" class="field-input" value="' + esc(range.to) + '"></div>' +
+          reportSortField('stok', 'review') +
         '</div>' +
         '<div id="review-body">' + renderReviewBody() + '</div>' +
       '</div>' +
@@ -3136,10 +3232,11 @@ function renderReviewOverlay() {
 function renderReviewBody() {
   const range = state.reportRange.stok || { to: todayISO() };
   const isToday = range.to >= todayISO();
-  const rows = computeStokReport(range.to);
-  const total = rows.reduce((s, r) => s + r.stok, 0);
-  const totalSiap = rows.reduce((s, r) => s + r.siapWH, 0);
-  const totalBelum = rows.reduce((s, r) => s + r.belumWH, 0);
+  const rawRows = computeStokReport(range.to);
+  const rows = sortReportRows(rawRows, state.reportSort.stok, REPORT_SORT_VALUE_FIELD.stok);
+  const total = rawRows.reduce((s, r) => s + r.stok, 0);
+  const totalSiap = rawRows.reduce((s, r) => s + r.siapWH, 0);
+  const totalBelum = rawRows.reduce((s, r) => s + r.belumWH, 0);
   const today = todayISO();
 
   return (
@@ -3207,6 +3304,14 @@ function bindReviewEvents() {
   if (dateToEl) {
     dateToEl.addEventListener('change', () => {
       state.reportRange.stok = { to: dateToEl.value || todayISO() };
+      const body = document.getElementById('review-body');
+      if (body) body.innerHTML = renderReviewBody();
+    });
+  }
+  const sortEl = document.getElementById('review-sort-stok');
+  if (sortEl) {
+    sortEl.addEventListener('change', () => {
+      state.reportSort.stok = sortEl.value;
       const body = document.getElementById('review-body');
       if (body) body.innerHTML = renderReviewBody();
     });
@@ -4360,16 +4465,38 @@ function bindTabContentEvents() {
 function bindPoInEvents() {
   bindCombobox('poin-nama');
 
+  // No. Reff preview: re-derives the full "nomor.AC|AD/MDP-SBY/bulan/tahun"
+  // string live from the three inputs that actually drive it, so what's
+  // shown is always exactly what submit will save.
+  const refreshReffPreview = () => {
+    const preview = document.getElementById('poin-reff-preview');
+    const noEl = document.getElementById('poin-reffno');
+    const jenisEl = document.getElementById('poin-reffjenis');
+    const tglEl = document.getElementById('poin-tanggal');
+    if (!preview || !noEl || !jenisEl) return;
+    const tanggal = (tglEl && tglEl.value) || todayISO();
+    const built = buildNoReff(noEl.value, jenisEl.value, tanggal);
+    preview.textContent = built || ('Isi nomor urut, contoh: 200.AC/MDP-SBY/' + romanMonth(new Date(tanggal + 'T00:00:00').getMonth() + 1) + '/' + new Date(tanggal + 'T00:00:00').getFullYear());
+  };
+  const reffNoEl = document.getElementById('poin-reffno');
+  const reffJenisEl = document.getElementById('poin-reffjenis');
+  const reffTglEl = document.getElementById('poin-tanggal');
+  if (reffNoEl) reffNoEl.addEventListener('input', refreshReffPreview);
+  if (reffJenisEl) reffJenisEl.addEventListener('change', refreshReffPreview);
+  if (reffTglEl) reffTglEl.addEventListener('change', refreshReffPreview);
+
   document.getElementById('poin-submit').addEventListener('click', () => {
     const nama = comboNama('poin-nama');
     const qty = document.getElementById('poin-qty').value;
     if (!nama || !qty) return;
+    const tanggal = document.getElementById('poin-tanggal').value || todayISO();
     const record = {
-      tanggal: document.getElementById('poin-tanggal').value || todayISO(),
+      tanggal: tanggal,
       nama: nama,
       ukuran: comboUkuran('poin-nama'),
       qty: Number(qty),
       noPo: document.getElementById('poin-nopo').value,
+      noReff: buildNoReff(document.getElementById('poin-reffno').value, document.getElementById('poin-reffjenis').value, tanggal),
       tglKirim: document.getElementById('poin-tglkirim').value,
       catatan: document.getElementById('poin-catatan').value,
     };
