@@ -1708,7 +1708,14 @@ function computeOsReport(to) {
     const osAwalStatic = osAwalKey ? OS_AWAL[osAwalKey] : 0;
     // OS carried in from before this month -- becomes this month's starting "PO".
     const osAwal = osAwalStatic + it.poSebelum - it.produksiSebelum - it.subcontSebelum;
-    const po = osAwal + it.poBulan; // "PO" shown already includes the carried baseline
+    // "PO" shown/totalled includes the carried baseline, but a customer's own
+    // surplus (osAwal < 0, i.e. they were over-produced) must not make their
+    // PO figure negative or drag down Total PO In when summed across
+    // customers -- same reasoning as Total Kekurangan: one customer's
+    // surplus doesn't offset another customer's demand. `os` below still
+    // uses the real (unclamped) osAwal, so the surplus keeps correctly
+    // reducing *that customer's own* outstanding balance into next month.
+    const po = Math.max(osAwal, 0) + it.poBulan;
     return Object.assign({}, it, {
       osAwal, po, produksi: it.produksiBulan, subcont: it.subcontBulan,
       os: osAwal + it.poBulan - it.produksiBulan - it.subcontBulan,
@@ -2785,10 +2792,12 @@ function renderDashboardTab() {
   const totalBelumWH = agg.reduce((s, r) => s + r.belumWH, 0);
 
   const kekurangan = agg.filter((r) => r.os > 0);
-  // Sum across ALL customers (not just the os>0 subset) so this stays
-  // arithmetically consistent with Resume OS Produksi's headline totals:
-  // Total PO In - Total Produksi+Subcont = Total OS.
-  const totalOs = agg.reduce((s, r) => s + r.os, 0);
+  // Same rule as Resume OS Produksi's Total Kekurangan: don't net one
+  // customer's surplus (os < 0) against another customer's shortage when
+  // summing for this card, since the two can't substitute for each other.
+  // Summed only over the os>0 (kekurangan) subset so this always matches
+  // what Resume OS Produksi reports as Total Kekurangan.
+  const totalOs = kekurangan.reduce((s, r) => s + r.os, 0);
 
   // "Hasil Produksi" di dashboard hanya bulan berjalan (reset tiap tanggal 1) --
   // data bulan lalu tidak hilang, tetap bisa dilihat lewat filter tanggal di tab Produksi.
