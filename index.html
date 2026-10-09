@@ -570,6 +570,17 @@ button, .card, .stat-card, .record-row, .field-input, .tab-btn { transition: tra
 .report-resume.report-resume-4 { grid-template-columns: 1fr 1fr 1fr 1fr; }
 .report-surplus-toggle { display: block; width: 100%; margin-top: 10px; padding: 9px; border: none; border-radius: 8px; background: #F0F3FB; color: #4A5578; font-size: 12px; font-weight: 700; cursor: pointer; }
 .report-surplus-note { font-size: 11px; color: #7A8296; margin-top: 6px; }
+.surplus-card { background: #FFFFFF; border: var(--border-soft); border-radius: var(--r-md); padding: 12px 14px; box-shadow: var(--shadow-card); margin-top: 8px; }
+.surplus-card-top { display: flex; align-items: center; gap: 10px; }
+.surplus-note-box { margin-top: 8px; padding-top: 8px; border-top: 1px dashed #E3E7F2; }
+.surplus-note-text { font-size: 11.5px; color: #4A5578; font-style: italic; flex: 1; }
+.surplus-note-empty { font-size: 11.5px; color: #9AA3BE; }
+.surplus-note-row { display: flex; align-items: flex-start; gap: 8px; }
+.surplus-note-edit-btn { font-size: 11px; color: #344DA1; font-weight: 600; background: none; border: none; padding: 0; cursor: pointer; white-space: nowrap; }
+.surplus-note-textarea { width: 100%; min-height: 54px; border: var(--border-soft); border-radius: 8px; padding: 8px; font-size: 12px; font-family: inherit; resize: vertical; box-sizing: border-box; }
+.surplus-note-actions { display: flex; gap: 8px; margin-top: 6px; }
+.surplus-note-save { background: #344DA1; color: #fff; border: none; border-radius: 6px; padding: 6px 12px; font-size: 11.5px; font-weight: 700; cursor: pointer; }
+.surplus-note-cancel { background: #F0F3FB; color: #4A5578; border: none; border-radius: 6px; padding: 6px 12px; font-size: 11.5px; font-weight: 700; cursor: pointer; }
 .report-resume-box { border-radius: 10px; padding: 12px; text-align: center; background: #F0F3FB; }
 .report-resume-box.good { background: #DFF3E6; }
 .report-resume-box.warn { background: #FCE9D2; }
@@ -714,6 +725,9 @@ const state = {
   // always left out of the downloaded/shared JPG (see the .no-export
   // handling in captureCardAsJpgBlob).
   osSurplusOpen: false,
+  // Customer name (nama) currently showing its surplus-note edit box, or
+  // null if none. Only one row editable at a time.
+  editingSurplusNote: null,
   editing: { poin: null, produksi: null, keluar: null },
   dateFilter: { poin: '', produksi: '', keluar: '' }, // yyyy-mm-dd or '' = show all, used to narrow the history list for editing
   produksiSumberFilter: 'semua', // 'semua' | 'sendiri' | 'subcont' -- filters the Riwayat Produksi list only
@@ -737,6 +751,11 @@ const state = {
 };
 
 let OS_AWAL = {};
+// Per-customer note explaining WHY a production surplus exists (damaged
+// pallet replacement, tukar guling, sample, etc). Purely informational --
+// never affects the os/po math, which still correctly zeroes out once a
+// matching new PO comes in regardless of what the note says.
+let SURPLUS_NOTE = {};
 let STOK_AWAL = {};
 
 // ---------------- Row <-> DB field mapping ----------------
@@ -813,13 +832,15 @@ async function loadAppData() {
 
 async function initBaseline() {
   try {
-    const [{ data: osRows }, { data: stokRows }, { data: masterRows }] = await Promise.all([
+    const [{ data: osRows }, { data: stokRows }, { data: masterRows }, { data: noteRows }] = await Promise.all([
       sb.from('os_awal').select('*'),
       sb.from('stok_awal').select('*'),
       sb.from('master_pallet').select('*'),
+      sb.from('surplus_note').select('*'),
     ]);
     OS_AWAL = {}; (osRows || []).forEach((r) => { OS_AWAL[r.nama] = r.qty; });
     STOK_AWAL = {}; (stokRows || []).forEach((r) => { STOK_AWAL[r.nama] = r.qty; });
+    SURPLUS_NOTE = {}; (noteRows || []).forEach((r) => { SURPLUS_NOTE[r.nama] = r.catatan || ''; });
     // Merge saved customers from master_pallet on top of the built-in
     // DATABASE list, so any customer entered previously (even if new) shows
     // up in the "Nama Customer" suggestions and auto-fills its ukuran.
@@ -939,9 +960,34 @@ function subscribeRealtime() {
       else STOK_AWAL[payload.new.nama] = payload.new.qty;
       render();
     })
+    .subscribe();
+
+  sb.channel('surplus_note-live')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'surplus_note' }, (payload) => {
+      if (payload.eventType === 'DELETE') delete SURPLUS_NOTE[payload.old.nama];
+      else SURPLUS_NOTE[payload.new.nama] = payload.new.catatan || '';
+      render();
+    })
     .subscribe((status) => {
       if (status === 'SUBSCRIBED') { state.live = true; render(); }
     });
+}
+
+// Saves/updates one customer's surplus-reason note (upsert on nama).
+async function saveSurplusNote(nama, catatan) {
+  const namaTrim = (nama || '').trim();
+  if (!namaTrim) return { ok: false, error: 'Nama customer tidak valid.' };
+  try {
+    const { error } = await sb.from('surplus_note').upsert(
+      { nama: namaTrim, catatan: (catatan || '').trim(), updated_by: state.account ? state.account.nama : '' },
+      { onConflict: 'nama' }
+    );
+    if (error) return { ok: false, error: error.message };
+    SURPLUS_NOTE[namaTrim] = (catatan || '').trim();
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
 }
 
 // ---------------- Saldo awal (OS & Stok) ----------------
@@ -1724,8 +1770,17 @@ function computeOsReport(to) {
     // uses the real (unclamped) osAwal, so the surplus keeps correctly
     // reducing *that customer's own* outstanding balance into next month.
     const po = Math.max(osAwal, 0) + it.poBulan;
+    // rowPo is the net "PO after existing surplus credit" figure -- e.g. a
+    // customer with 21 pcs surplus banked and a new 100 pcs PO shows 79
+    // here, matching OS exactly (rowPo - produksi - subcont = os) so the
+    // table reads cleanly instead of showing the raw 100. It's for DISPLAY
+    // on individual rows only (always positive for every row actually shown
+    // in the table, since those all have os > 0, which guarantees
+    // osAwal + poBulan > 0) -- totals keep using the clamped `po` above so
+    // Total PO In isn't dragged down by any customer's surplus.
+    const rowPo = osAwal + it.poBulan;
     return Object.assign({}, it, {
-      osAwal, po, produksi: it.produksiBulan, subcont: it.subcontBulan,
+      osAwal, po, rowPo, produksi: it.produksiBulan, subcont: it.subcontBulan,
       os: osAwal + it.poBulan - it.produksiBulan - it.subcontBulan,
     });
   });
@@ -3116,6 +3171,44 @@ function renderSubcontReportBody() {
 }
 
 // ---------------- OS report ----------------
+// One surplus-customer card inside the (no-export) "Surplus Belum Terpakai"
+// detail list -- shows the usual PO/Prod/Subc/OS figures plus a free-text
+// note explaining why the surplus exists (damaged-pallet replacement, tukar
+// guling, sample, etc). The note is purely informational: editing/saving it
+// never touches po/produksi/subcont/os, so the math stays exactly the same
+// (surplus still zeroes out automatically against a future PO) no matter
+// what the note says.
+function renderSurplusCard(r) {
+  const note = SURPLUS_NOTE[r.nama] || '';
+  const isEditing = state.editingSurplusNote === r.nama;
+  return (
+    '<div class="surplus-card">' +
+      '<div class="surplus-card-top">' +
+        '<div class="record-main">' +
+          '<div class="record-name">' + esc(r.nama) + '</div>' +
+          '<div class="record-meta">' + esc(r.ukuran || '-') + '</div>' +
+          '<div class="record-meta small">PO ' + fmtNum(r.po) + ' &middot; Produksi ' + fmtNum(r.produksi) + (r.subcont > 0 ? ' &middot; Subcont ' + fmtNum(r.subcont) : '') + '</div>' +
+        '</div>' +
+        '<div class="record-qty good">+' + fmtNum(Math.abs(r.os)) + '<span>lebih</span></div>' +
+      '</div>' +
+      '<div class="surplus-note-box">' +
+        (isEditing ? (
+          '<textarea class="surplus-note-textarea" id="surplus-note-textarea" placeholder="Contoh: untuk ganti pallet rusak di customer / tukar guling / sample pallet">' + esc(note) + '</textarea>' +
+          '<div class="surplus-note-actions">' +
+            '<button type="button" class="surplus-note-save" data-surplus-save="' + esc(r.nama) + '">Simpan</button>' +
+            '<button type="button" class="surplus-note-cancel" data-surplus-cancel>Batal</button>' +
+          '</div>'
+        ) : (
+          '<div class="surplus-note-row">' +
+            (note ? '<div class="surplus-note-text">' + esc(note) + '</div>' : '<div class="surplus-note-empty">Belum ada catatan.</div>') +
+            '<button type="button" class="surplus-note-edit-btn" data-surplus-edit="' + esc(r.nama) + '">' + (note ? '&#9998; Edit' : '+ Tambah catatan') + '</button>' +
+          '</div>'
+        )) +
+      '</div>' +
+    '</div>'
+  );
+}
+
 function renderOsReportBody() {
   const range = state.reportRange.os;
   const d = computeOsReport(range.to);
@@ -3124,37 +3217,33 @@ function renderOsReportBody() {
   const surplusSorted = d.surplusRows.slice().sort((a, b) => a.os - b.os); // biggest surplus first
   return (
     reportCardOpen('os', 'Resume OS Produksi', 'Data per tanggal: ' + fmtDateLong(range.to)) +
-    '<div class="report-resume report-resume-4">' +
+    '<div class="report-resume report-resume-3">' +
       '<div class="report-resume-box"><div class="report-resume-value">' + fmtNum(d.totalPo) + '</div><div class="report-resume-label">Total PO In</div></div>' +
       '<div class="report-resume-box good"><div class="report-resume-value">' + fmtNum(d.totalProduksiSubcont) + '</div><div class="report-resume-label">Total Produksi + Subcont</div></div>' +
       '<div class="report-resume-box warn"><div class="report-resume-value">' + fmtNum(d.totalKurang) + '</div><div class="report-resume-label">Total Kekurangan (' + d.itemKurang + ' item)</div></div>' +
-      '<div class="report-resume-box good"><div class="report-resume-value">' + fmtNum(d.totalSurplus) + '</div><div class="report-resume-label">Surplus Belum Terpakai (' + d.itemSurplus + ' item)</div></div>' +
     '</div>' +
     '<div class="report-table-wrap">' +
     '<table class="report-table"><thead><tr><th>Nama Customer</th><th>Ukuran</th><th class="num">PO</th><th class="num">Prod.</th><th class="num">Subc.</th><th class="num">OS</th></tr></thead><tbody>' +
       (sortedRows.length ? sortedRows.map((r) => (
-        '<tr><td>' + esc(r.nama) + '</td><td>' + esc(r.ukuran || '-') + '</td><td class="num qty">' + fmtNum(r.po) + '</td>' +
+        '<tr><td>' + esc(r.nama) + '</td><td>' + esc(r.ukuran || '-') + '</td><td class="num qty">' + fmtNum(r.rowPo) + '</td>' +
         '<td class="num qty">' + fmtNum(r.produksi) + '</td><td class="num qty">' + fmtNum(r.subcont) + '</td>' +
         '<td class="num qty ' + (r.os > 0 ? 'belum' : 'siap') + '">' + (r.os > 0 ? '-' : '+') + fmtNum(Math.abs(r.os)) + '</td></tr>'
       )).join('') : '<tr><td colspan="6" style="text-align:center;color:#9AA3BE;padding:16px;">Semua customer sudah lunas produksinya.</td></tr>') +
     '</tbody></table></div>' +
     // Detail surplus: informasi tambahan untuk dilihat di aplikasi saja --
     // class "no-export" membuatnya selalu disembunyikan saat capture JPG
-    // (lihat captureCardAsJpgBlob), terlepas dari sedang dibuka/ditutup.
+    // (lihat captureCardAsJpgBlob), terlepas dari sedang dibuka/ditutup. Ini
+    // termasuk nilai Total Surplus itu sendiri -- sengaja tidak dimunculkan
+    // di kotak ringkasan atas sama sekali supaya tidak membingungkan tim
+    // saat JPG dibagikan.
     '<div class="no-export">' +
       '<button type="button" class="report-surplus-toggle" data-surplus-toggle>' +
-        (state.osSurplusOpen ? '&#9650; Sembunyikan' : '&#9660; Tampilkan') + ' ' + d.itemSurplus + ' Customer dengan Surplus Produksi' +
+        (state.osSurplusOpen ? '&#9650; Sembunyikan' : '&#9660; Tampilkan') + ' ' + d.itemSurplus + ' Customer dengan Surplus Produksi (' + fmtNum(d.totalSurplus) + ' pcs)' +
       '</button>' +
       (state.osSurplusOpen ? (
-        '<div class="report-table-wrap">' +
-        '<table class="report-table"><thead><tr><th>Nama Customer</th><th>Ukuran</th><th class="num">PO</th><th class="num">Prod.</th><th class="num">Subc.</th><th class="num">OS</th></tr></thead><tbody>' +
-          (surplusSorted.length ? surplusSorted.map((r) => (
-            '<tr><td>' + esc(r.nama) + '</td><td>' + esc(r.ukuran || '-') + '</td><td class="num qty">' + fmtNum(r.po) + '</td>' +
-            '<td class="num qty">' + fmtNum(r.produksi) + '</td><td class="num qty">' + fmtNum(r.subcont) + '</td>' +
-            '<td class="num qty siap">+' + fmtNum(Math.abs(r.os)) + '</td></tr>'
-          )).join('') : '<tr><td colspan="6" style="text-align:center;color:#9AA3BE;padding:16px;">Tidak ada surplus saat ini.</td></tr>') +
-        '</tbody></table></div>' +
-        '<div class="report-surplus-note">Daftar ini hanya untuk dilihat di aplikasi dan tidak ikut tercetak pada JPG yang diunduh/dibagikan.</div>'
+        (surplusSorted.length ? surplusSorted.map((r) => renderSurplusCard(r)).join('') :
+          '<div class="surplus-card" style="text-align:center;color:#9AA3BE;">Tidak ada surplus saat ini.</div>') +
+        '<div class="report-surplus-note">Surplus bukan berarti stok fisik tersedia -- bisa saja sudah terpakai untuk ganti pallet rusak, tukar guling, atau sample (lihat catatan). Daftar ini hanya untuk dilihat di aplikasi dan tidak ikut tercetak pada JPG yang diunduh/dibagikan.</div>'
       ) : '') +
     '</div>' +
     reportCardClose(today)
@@ -3241,9 +3330,37 @@ function bindReportOverlayEvents(type) {
     const bodyEl = document.getElementById('report-body-os');
     if (bodyEl) {
       bodyEl.addEventListener('click', (e) => {
-        if (!e.target.closest('[data-surplus-toggle]')) return;
-        state.osSurplusOpen = !state.osSurplusOpen;
-        bodyEl.innerHTML = renderReportBody('os');
+        const toggleBtn = e.target.closest('[data-surplus-toggle]');
+        if (toggleBtn) {
+          state.osSurplusOpen = !state.osSurplusOpen;
+          bodyEl.innerHTML = renderReportBody('os');
+          return;
+        }
+        const editBtn = e.target.closest('[data-surplus-edit]');
+        if (editBtn) {
+          state.editingSurplusNote = editBtn.getAttribute('data-surplus-edit');
+          bodyEl.innerHTML = renderReportBody('os');
+          return;
+        }
+        const cancelBtn = e.target.closest('[data-surplus-cancel]');
+        if (cancelBtn) {
+          state.editingSurplusNote = null;
+          bodyEl.innerHTML = renderReportBody('os');
+          return;
+        }
+        const saveBtn = e.target.closest('[data-surplus-save]');
+        if (saveBtn) {
+          const nama = saveBtn.getAttribute('data-surplus-save');
+          const textarea = document.getElementById('surplus-note-textarea');
+          const catatan = textarea ? textarea.value : '';
+          saveBtn.textContent = 'Menyimpan...';
+          saveBtn.disabled = true;
+          saveSurplusNote(nama, catatan).then((res) => {
+            if (!res.ok) { alert('Gagal menyimpan catatan: ' + res.error); saveBtn.textContent = 'Simpan'; saveBtn.disabled = false; return; }
+            state.editingSurplusNote = null;
+            bodyEl.innerHTML = renderReportBody('os');
+          });
+        }
       });
     }
   }
