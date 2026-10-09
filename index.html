@@ -567,6 +567,9 @@ button, .card, .stat-card, .record-row, .field-input, .tab-btn { transition: tra
 .report-total-row td { font-weight: 800; border-top: 2px solid #344DA1; border-bottom: none; background: #F0F3FB !important; font-family: 'JetBrains Mono', monospace; }
 .report-resume { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; margin-bottom: 8px; }
 .report-resume.report-resume-3 { grid-template-columns: 1fr 1fr 1fr; }
+.report-resume.report-resume-4 { grid-template-columns: 1fr 1fr 1fr 1fr; }
+.report-surplus-toggle { display: block; width: 100%; margin-top: 10px; padding: 9px; border: none; border-radius: 8px; background: #F0F3FB; color: #4A5578; font-size: 12px; font-weight: 700; cursor: pointer; }
+.report-surplus-note { font-size: 11px; color: #7A8296; margin-top: 6px; }
 .report-resume-box { border-radius: 10px; padding: 12px; text-align: center; background: #F0F3FB; }
 .report-resume-box.good { background: #DFF3E6; }
 .report-resume-box.warn { background: #FCE9D2; }
@@ -706,6 +709,11 @@ const state = {
   // 'za', 'besar' (qty/value descending) and 'kecil' (ascending); poin keeps
   // an extra 'tanggal' (chronological) option since it lists raw PO entries.
   reportSort: { poin: 'tanggal', produksi: 'az', os: 'az', keluar: 'az', stok: 'az' },
+  // Resume OS Produksi: whether the "Surplus Belum Terpakai" detail list is
+  // expanded in-app. Closed by default, and -- regardless of this flag --
+  // always left out of the downloaded/shared JPG (see the .no-export
+  // handling in captureCardAsJpgBlob).
+  osSurplusOpen: false,
   editing: { poin: null, produksi: null, keluar: null },
   dateFilter: { poin: '', produksi: '', keluar: '' }, // yyyy-mm-dd or '' = show all, used to narrow the history list for editing
   produksiSumberFilter: 'semua', // 'semua' | 'sendiri' | 'subcont' -- filters the Riwayat Produksi list only
@@ -1735,7 +1743,13 @@ function computeOsReport(to) {
   const totalPo = allRows.reduce((s, r) => s + r.po, 0);
   const totalProduksiSubcont = allRows.reduce((s, r) => s + r.produksi + r.subcont, 0);
   const totalKurang = rows.reduce((s, r) => s + r.os, 0);
-  return { rows, totalPo, totalProduksiSubcont, totalKurang, itemKurang: rows.length };
+  // Customers currently sitting on a production surplus (os < 0) -- e.g.
+  // over-produced last month, not yet absorbed by a new PO. This is purely
+  // informational: it's never netted into totalKurang above (one customer's
+  // surplus can't cover another customer's shortage), it's shown separately.
+  const surplusRows = allRows.filter((r) => r.os < 0);
+  const totalSurplus = surplusRows.reduce((s, r) => s + Math.abs(r.os), 0);
+  return { rows, totalPo, totalProduksiSubcont, totalKurang, itemKurang: rows.length, surplusRows, totalSurplus, itemSurplus: surplusRows.length };
 }
 
 function computeKeluarReport(from, to) {
@@ -1833,6 +1847,14 @@ function computeMutasiDetail(nama, from, to) {
 // supaya JPG-nya selalu utuh, lalu dikembalikan seperti semula.
 async function captureCardAsJpgBlob(cardEl) {
   if (!cardEl || typeof html2canvas === 'undefined') return null;
+  // Elements marked .no-export (e.g. the in-app-only "Surplus Belum
+  // Terpakai" detail list) are hidden for the duration of the capture,
+  // regardless of whether they're currently expanded on screen, then
+  // restored right after -- so they never end up in the downloaded/shared
+  // JPG but the live app view is unaffected.
+  const noExportEls = Array.from(cardEl.querySelectorAll('.no-export'));
+  const noExportRestores = noExportEls.map((el) => ({ el, display: el.style.display }));
+  noExportEls.forEach((el) => { el.style.display = 'none'; });
   const wraps = Array.from(cardEl.querySelectorAll('.report-table-wrap'));
   const wrapRestores = wraps.map((wrap) => ({
     wrap,
@@ -1860,6 +1882,7 @@ async function captureCardAsJpgBlob(cardEl) {
     cardEl.style.width = prevCardWidth;
     cardEl.style.maxWidth = prevCardMaxWidth;
     wrapRestores.forEach((r) => { r.wrap.style.overflow = r.overflow; r.wrap.style.width = r.width; });
+    noExportRestores.forEach((r) => { r.el.style.display = r.display; });
   }
 }
 
@@ -3098,12 +3121,14 @@ function renderOsReportBody() {
   const d = computeOsReport(range.to);
   const sortedRows = sortReportRows(d.rows, state.reportSort.os, REPORT_SORT_VALUE_FIELD.os);
   const today = todayISO();
+  const surplusSorted = d.surplusRows.slice().sort((a, b) => a.os - b.os); // biggest surplus first
   return (
     reportCardOpen('os', 'Resume OS Produksi', 'Data per tanggal: ' + fmtDateLong(range.to)) +
-    '<div class="report-resume report-resume-3">' +
+    '<div class="report-resume report-resume-4">' +
       '<div class="report-resume-box"><div class="report-resume-value">' + fmtNum(d.totalPo) + '</div><div class="report-resume-label">Total PO In</div></div>' +
       '<div class="report-resume-box good"><div class="report-resume-value">' + fmtNum(d.totalProduksiSubcont) + '</div><div class="report-resume-label">Total Produksi + Subcont</div></div>' +
       '<div class="report-resume-box warn"><div class="report-resume-value">' + fmtNum(d.totalKurang) + '</div><div class="report-resume-label">Total Kekurangan (' + d.itemKurang + ' item)</div></div>' +
+      '<div class="report-resume-box good"><div class="report-resume-value">' + fmtNum(d.totalSurplus) + '</div><div class="report-resume-label">Surplus Belum Terpakai (' + d.itemSurplus + ' item)</div></div>' +
     '</div>' +
     '<div class="report-table-wrap">' +
     '<table class="report-table"><thead><tr><th>Nama Customer</th><th>Ukuran</th><th class="num">PO</th><th class="num">Prod.</th><th class="num">Subc.</th><th class="num">OS</th></tr></thead><tbody>' +
@@ -3113,6 +3138,25 @@ function renderOsReportBody() {
         '<td class="num qty ' + (r.os > 0 ? 'belum' : 'siap') + '">' + (r.os > 0 ? '-' : '+') + fmtNum(Math.abs(r.os)) + '</td></tr>'
       )).join('') : '<tr><td colspan="6" style="text-align:center;color:#9AA3BE;padding:16px;">Semua customer sudah lunas produksinya.</td></tr>') +
     '</tbody></table></div>' +
+    // Detail surplus: informasi tambahan untuk dilihat di aplikasi saja --
+    // class "no-export" membuatnya selalu disembunyikan saat capture JPG
+    // (lihat captureCardAsJpgBlob), terlepas dari sedang dibuka/ditutup.
+    '<div class="no-export">' +
+      '<button type="button" class="report-surplus-toggle" data-surplus-toggle>' +
+        (state.osSurplusOpen ? '&#9650; Sembunyikan' : '&#9660; Tampilkan') + ' ' + d.itemSurplus + ' Customer dengan Surplus Produksi' +
+      '</button>' +
+      (state.osSurplusOpen ? (
+        '<div class="report-table-wrap">' +
+        '<table class="report-table"><thead><tr><th>Nama Customer</th><th>Ukuran</th><th class="num">PO</th><th class="num">Prod.</th><th class="num">Subc.</th><th class="num">OS</th></tr></thead><tbody>' +
+          (surplusSorted.length ? surplusSorted.map((r) => (
+            '<tr><td>' + esc(r.nama) + '</td><td>' + esc(r.ukuran || '-') + '</td><td class="num qty">' + fmtNum(r.po) + '</td>' +
+            '<td class="num qty">' + fmtNum(r.produksi) + '</td><td class="num qty">' + fmtNum(r.subcont) + '</td>' +
+            '<td class="num qty siap">+' + fmtNum(Math.abs(r.os)) + '</td></tr>'
+          )).join('') : '<tr><td colspan="6" style="text-align:center;color:#9AA3BE;padding:16px;">Tidak ada surplus saat ini.</td></tr>') +
+        '</tbody></table></div>' +
+        '<div class="report-surplus-note">Daftar ini hanya untuk dilihat di aplikasi dan tidak ikut tercetak pada JPG yang diunduh/dibagikan.</div>'
+      ) : '') +
+    '</div>' +
     reportCardClose(today)
   );
 }
@@ -3189,6 +3233,19 @@ function bindReportOverlayEvents(type) {
       const body = document.getElementById('report-body-' + type);
       if (body) body.innerHTML = renderReportBody(type);
     });
+  }
+
+  // Delegated so it keeps working after the sort/date handlers above replace
+  // report-body-<type>'s innerHTML (the container itself is never replaced).
+  if (type === 'os') {
+    const bodyEl = document.getElementById('report-body-os');
+    if (bodyEl) {
+      bodyEl.addEventListener('click', (e) => {
+        if (!e.target.closest('[data-surplus-toggle]')) return;
+        state.osSurplusOpen = !state.osSurplusOpen;
+        bodyEl.innerHTML = renderReportBody('os');
+      });
+    }
   }
 }
 
