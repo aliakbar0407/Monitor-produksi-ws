@@ -581,6 +581,7 @@ button, .card, .stat-card, .record-row, .field-input, .tab-btn { transition: tra
 .surplus-note-actions { display: flex; gap: 8px; margin-top: 6px; }
 .surplus-note-save { background: #344DA1; color: #fff; border: none; border-radius: 6px; padding: 6px 12px; font-size: 11.5px; font-weight: 700; cursor: pointer; }
 .surplus-note-cancel { background: #F0F3FB; color: #4A5578; border: none; border-radius: 6px; padding: 6px 12px; font-size: 11.5px; font-weight: 700; cursor: pointer; }
+.surplus-note-delete { background: #FCE9D2; color: #B5651A; border: none; border-radius: 6px; padding: 6px 12px; font-size: 11.5px; font-weight: 700; cursor: pointer; margin-left: auto; }
 .report-resume-box { border-radius: 10px; padding: 12px; text-align: center; background: #F0F3FB; }
 .report-resume-box.good { background: #DFF3E6; }
 .report-resume-box.warn { background: #FCE9D2; }
@@ -900,6 +901,7 @@ async function initStore() {
   state.storeStatus = 'ready';
   render();
   subscribeRealtime();
+  cleanupResolvedSurplusNotes();
 }
 
 function subscribeRealtime() {
@@ -988,6 +990,37 @@ async function saveSurplusNote(nama, catatan) {
   } catch (e) {
     return { ok: false, error: String(e) };
   }
+}
+
+async function deleteSurplusNote(nama) {
+  const namaTrim = (nama || '').trim();
+  if (!namaTrim) return { ok: false, error: 'Nama customer tidak valid.' };
+  try {
+    const { error } = await sb.from('surplus_note').delete().eq('nama', namaTrim);
+    if (error) return { ok: false, error: error.message };
+    delete SURPLUS_NOTE[namaTrim];
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}
+
+// Housekeeping: a surplus note is tied only to a customer's name, not to the
+// specific over-production episode it explained. Once that surplus is fully
+// absorbed by a later PO (the customer no longer has os < 0), a leftover
+// note would otherwise sit silently in the database and could wrongly
+// resurface if the same customer ends up with an unrelated surplus later.
+// Called once after each full data load (not on every render, to avoid
+// spamming deletes) to quietly clear notes for customers who are no longer
+// in surplus.
+function cleanupResolvedSurplusNotes() {
+  const noteNames = Object.keys(SURPLUS_NOTE);
+  if (!noteNames.length) return;
+  const d = computeOsReport(todayISO());
+  const stillSurplus = new Set(d.surplusRows.map((r) => normKey(r.nama)));
+  noteNames.forEach((nama) => {
+    if (!stillSurplus.has(normKey(nama))) deleteSurplusNote(nama);
+  });
 }
 
 // ---------------- Saldo awal (OS & Stok) ----------------
@@ -3197,6 +3230,7 @@ function renderSurplusCard(r) {
           '<div class="surplus-note-actions">' +
             '<button type="button" class="surplus-note-save" data-surplus-save="' + esc(r.nama) + '">Simpan</button>' +
             '<button type="button" class="surplus-note-cancel" data-surplus-cancel>Batal</button>' +
+            (note ? '<button type="button" class="surplus-note-delete" data-surplus-delete="' + esc(r.nama) + '">Hapus</button>' : '') +
           '</div>'
         ) : (
           '<div class="surplus-note-row">' +
@@ -3357,6 +3391,19 @@ function bindReportOverlayEvents(type) {
           saveBtn.disabled = true;
           saveSurplusNote(nama, catatan).then((res) => {
             if (!res.ok) { alert('Gagal menyimpan catatan: ' + res.error); saveBtn.textContent = 'Simpan'; saveBtn.disabled = false; return; }
+            state.editingSurplusNote = null;
+            bodyEl.innerHTML = renderReportBody('os');
+          });
+          return;
+        }
+        const deleteBtn = e.target.closest('[data-surplus-delete]');
+        if (deleteBtn) {
+          const nama = deleteBtn.getAttribute('data-surplus-delete');
+          if (!confirm('Hapus catatan untuk ' + nama + '?')) return;
+          deleteBtn.textContent = 'Menghapus...';
+          deleteBtn.disabled = true;
+          deleteSurplusNote(nama).then((res) => {
+            if (!res.ok) { alert('Gagal menghapus catatan: ' + res.error); deleteBtn.textContent = 'Hapus'; deleteBtn.disabled = false; return; }
             state.editingSurplusNote = null;
             bodyEl.innerHTML = renderReportBody('os');
           });
