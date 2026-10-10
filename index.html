@@ -582,6 +582,9 @@ button, .card, .stat-card, .record-row, .field-input, .tab-btn { transition: tra
 .surplus-note-save { background: #344DA1; color: #fff; border: none; border-radius: 6px; padding: 6px 12px; font-size: 11.5px; font-weight: 700; cursor: pointer; }
 .surplus-note-cancel { background: #F0F3FB; color: #4A5578; border: none; border-radius: 6px; padding: 6px 12px; font-size: 11.5px; font-weight: 700; cursor: pointer; }
 .surplus-note-delete { background: #FCE9D2; color: #B5651A; border: none; border-radius: 6px; padding: 6px 12px; font-size: 11.5px; font-weight: 700; cursor: pointer; margin-left: auto; }
+.surplus-zero-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.surplus-zero-btn { background: #FCE9D2; color: #B5651A; border: none; border-radius: 6px; padding: 6px 10px; font-size: 11px; font-weight: 700; cursor: pointer; white-space: nowrap; }
+.surplus-zero-hint { font-size: 10.5px; color: #9AA3BE; }
 .report-resume-box { border-radius: 10px; padding: 12px; text-align: center; background: #F0F3FB; }
 .report-resume-box.good { background: #DFF3E6; }
 .report-resume-box.warn { background: #FCE9D2; }
@@ -990,6 +993,27 @@ async function saveSurplusNote(nama, catatan) {
   } catch (e) {
     return { ok: false, error: String(e) };
   }
+}
+
+// Permanently stops a customer's current surplus from carrying forward as a
+// credit against future PO (e.g. a "tukar guling"/replacement production
+// that was never real spare stock). This does NOT touch or delete any PO or
+// production record -- production history stays exactly as it happened.
+// It only nudges that customer's OS Awal baseline by the surplus amount, so
+// next time osAwal is computed (OS_AWAL_static + poSebelum - produksiSebelum
+// - subcontSebelum) it comes out to 0 instead of carrying the old surplus.
+async function zeroOutSurplus(nama) {
+  const namaTrim = (nama || '').trim();
+  if (!namaTrim) return { ok: false, error: 'Nama customer tidak valid.' };
+  const d = computeOsReport(todayISO());
+  const row = d.surplusRows.find((r) => normKey(r.nama) === normKey(namaTrim));
+  if (!row) return { ok: false, error: 'Customer ini sudah tidak surplus lagi.' };
+  const osKey = Object.keys(OS_AWAL).find((k) => normKey(k) === normKey(namaTrim));
+  const stokKey = Object.keys(STOK_AWAL).find((k) => normKey(k) === normKey(namaTrim));
+  const currentStatic = osKey ? OS_AWAL[osKey] : 0;
+  const currentStok = stokKey ? STOK_AWAL[stokKey] : 0;
+  const newStatic = currentStatic - row.osAwal; // cancels exactly the carried-in surplus
+  return saveBaseline(namaTrim, newStatic, currentStok);
 }
 
 async function deleteSurplusNote(nama) {
@@ -3224,6 +3248,10 @@ function renderSurplusCard(r) {
         '</div>' +
         '<div class="record-qty good">+' + fmtNum(Math.abs(r.os)) + '<span>lebih</span></div>' +
       '</div>' +
+      '<div class="surplus-zero-row">' +
+        '<button type="button" class="surplus-zero-btn" data-surplus-zero="' + esc(r.nama) + '">Nolkan surplus ini</button>' +
+        '<span class="surplus-zero-hint">kalau sudah terpakai (tukar guling/rusak/sample), bukan stok tersedia</span>' +
+      '</div>' +
       '<div class="surplus-note-box">' +
         (isEditing ? (
           '<textarea class="surplus-note-textarea" id="surplus-note-textarea" placeholder="Contoh: untuk ganti pallet rusak di customer / tukar guling / sample pallet">' + esc(note) + '</textarea>' +
@@ -3393,6 +3421,20 @@ function bindReportOverlayEvents(type) {
             if (!res.ok) { alert('Gagal menyimpan catatan: ' + res.error); saveBtn.textContent = 'Simpan'; saveBtn.disabled = false; return; }
             state.editingSurplusNote = null;
             bodyEl.innerHTML = renderReportBody('os');
+          });
+          return;
+        }
+        const zeroBtn = e.target.closest('[data-surplus-zero]');
+        if (zeroBtn) {
+          const nama = zeroBtn.getAttribute('data-surplus-zero');
+          if (!confirm('Nolkan surplus ' + nama + '?\n\nIni berarti kelebihan produksi yang tercatat tidak lagi dihitung sebagai kredit untuk PO berikutnya (dianggap sudah terpakai -- tukar guling/ganti rusak/sample). Riwayat PO dan produksi TIDAK diubah atau dihapus, hanya OS Awal customer ini yang disesuaikan.\n\nLanjutkan?')) return;
+          zeroBtn.textContent = 'Memproses...';
+          zeroBtn.disabled = true;
+          zeroOutSurplus(nama).then((res) => {
+            // saveBaseline() (called inside zeroOutSurplus) already does a
+            // full render() on success, which rebuilds this overlay fresh --
+            // nothing further to do here except surface a failure.
+            if (!res.ok) { alert('Gagal menolkan surplus: ' + res.error); zeroBtn.textContent = 'Nolkan surplus ini'; zeroBtn.disabled = false; }
           });
           return;
         }
