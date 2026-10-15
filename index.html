@@ -849,6 +849,15 @@ html.guest .wh-input{pointer-events:none;opacity:.6}
 .settings-right>*{animation:panelIn .25s ease}
 }
 @keyframes panelIn{from{opacity:0;transform:translateX(18px)}to{opacity:1;transform:none}}
+
+/* ===== Header di atas kartu, mode tamu mobile, animasi geser, toast back ===== */
+.app-header{position:relative;z-index:50}
+@media(max-width:1023px){html.guest .app-shell.tab-dashboard::before{height:296px}}
+@keyframes slideNext{from{opacity:.4;transform:translateX(36px)}to{opacity:1;transform:none}}
+@keyframes slidePrev{from{opacity:.4;transform:translateX(-36px)}to{opacity:1;transform:none}}
+.slide-next{animation:slideNext .22s ease}
+.slide-prev{animation:slidePrev .22s ease}
+.back-toast{position:fixed;left:50%;bottom:96px;transform:translateX(-50%);background:rgba(20,30,70,.92);color:#fff;font-size:13px;font-weight:600;padding:10px 16px;border-radius:999px;z-index:300}
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -1415,7 +1424,7 @@ function showRegisterView() { state.authView = 'register'; state.loginError = ''
 function rpcErrorMessage(error) {
   const msg = (error && error.message) || '';
   if (msg.indexOf('NAMA_TAKEN') !== -1) return 'Nama itu sudah terdaftar. Coba masuk, atau pakai nama lain.';
-  if (msg.indexOf('PASSWORD_TOO_SHORT') !== -1) return 'Password minimal 4 karakter.';
+  if (msg.indexOf('PASSWORD_TOO_SHORT') !== -1) return 'Password minimal 6 karakter.';
   if (msg.indexOf('MISSING_FIELDS') !== -1) return 'Nama dan Bagian wajib diisi.';
   if (msg.indexOf('WRONG_PASSWORD') !== -1) return 'Password lama salah.';
   return 'Terjadi kesalahan: ' + (msg || 'tidak diketahui');
@@ -1435,9 +1444,10 @@ function authErrorMessage(error) {
   return 'Terjadi kesalahan: ' + ((error && error.message) || 'tidak diketahui');
 }
 async function finishLogin(user, nama, bagian) {
-  var res = await sb.from('profiles').select('id,nama,bagian').eq('id', user.id).maybeSingle();
+  var res = await sb.from('profiles').select('*').eq('id', user.id).maybeSingle();
   var p = res.data || { id: user.id, nama: nama, bagian: bagian || '' };
-  state.account = { id: p.id, nama: p.nama, bagian: p.bagian };
+  state.account = { id: p.id, nama: p.nama, bagian: p.bagian, avatar: p.avatar || '' };
+  armBack();
   state.authenticated = true;
   state.loginError = '';
   render();
@@ -1463,6 +1473,7 @@ async function doLoginPassword(nama, password) {
 
 function doGuestLogin() {
   state.account = { id: null, nama: 'Tamu', bagian: 'Mode Tamu', guest: true };
+  armBack();
   state.authenticated = true;
   state.loginError = '';
   state.tab = 'dashboard';
@@ -1822,7 +1833,7 @@ async function saveProfile(nama, bagian) {
   if (!nama || !bagian) return { ok: false, error: 'Nama dan Bagian wajib diisi.' };
   const { data, error } = await sb.from('profiles').update({ nama: nama, bagian: bagian }).eq('id', state.account.id).select('id,nama,bagian').maybeSingle();
   if (error || !data) return { ok: false, error: (error && /duplicate|unique/i.test(error.message)) ? 'Nama itu sudah terdaftar. Coba masuk, atau pakai nama lain.' : 'Gagal menyimpan profil.' };
-  state.account = { id: data.id, nama: data.nama, bagian: data.bagian };
+  state.account = { id: data.id, nama: data.nama, bagian: data.bagian, avatar: state.account.avatar || '' };
   render();
   return { ok: true };
 }
@@ -2469,7 +2480,7 @@ function renderRegisterScreen() {
         '</div>' +
         '<div class="login-field">' +
           '<label class="login-label">Password</label>' +
-          '<input id="setup-password" type="password" class="login-input" placeholder="Minimal 4 karakter" autocomplete="new-password">' +
+          '<input id="setup-password" type="password" class="login-input" placeholder="Minimal 6 karakter" autocomplete="new-password">' +
         '</div>' +
         '<div class="login-field">' +
           '<label class="login-label">Konfirmasi Password</label>' +
@@ -2496,7 +2507,7 @@ function bindRegisterEvents() {
     const pw = pwEl.value || '';
     const pw2 = pw2El.value || '';
     if (!nama.trim() || !bagian.trim()) { state.loginError = 'Nama dan Bagian wajib diisi.'; render(); return; }
-    if (pw.length < 4) { state.loginError = 'Password minimal 4 karakter.'; render(); return; }
+    if (pw.length < 6) { state.loginError = 'Password minimal 6 karakter.'; render(); return; }
     if (pw !== pw2) { state.loginError = 'Konfirmasi password tidak cocok.'; render(); return; }
     doSetupAccount(nama, bagian, pw);
   };
@@ -2593,9 +2604,16 @@ function gearIconSvg() {
   return '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>';
 }
 // Foto profil: disimpan per akun di perangkat ini (localStorage), dipotong persegi 160px.
-function avatarKey() { return 'mdp_avatar_' + ((state.account && state.account.nama) || '').toLowerCase(); }
-function getAvatar() { try { return localStorage.getItem(avatarKey()) || ''; } catch (e) { return ''; } }
-function clearAvatar() { try { localStorage.removeItem(avatarKey()); } catch (e) { /* ignore */ } }
+function getAvatar() { return (state.account && state.account.avatar) || ''; }
+function setAvatarData(uri) {
+  if (state.account) state.account.avatar = uri || '';
+  if (state.account && state.account.id && !state.account.guest) {
+    sb.from('profiles').update({ avatar: uri || null }).eq('id', state.account.id).then(function (r) {
+      if (r && r.error) alert('Foto belum tersimpan di server. Jalankan auth-3-avatar.sql di Supabase.');
+    });
+  }
+}
+function clearAvatar() { setAvatarData(''); }
 function readAvatar(file) {
   return new Promise(function (res) {
     var r = new FileReader();
@@ -2605,7 +2623,7 @@ function readAvatar(file) {
         var c = document.createElement('canvas'); c.width = c.height = 160;
         var m = Math.min(im.width, im.height);
         c.getContext('2d').drawImage(im, (im.width - m) / 2, (im.height - m) / 2, m, m, 0, 0, 160, 160);
-        try { localStorage.setItem(avatarKey(), c.toDataURL('image/jpeg', 0.82)); } catch (e) { /* ignore */ }
+        setAvatarData(c.toDataURL('image/jpeg', 0.82));
         res();
       };
       im.src = r.result;
@@ -2685,6 +2703,71 @@ function renderTabContent() {
   }
 }
 
+// ---------------- Pindah tab, geser layar, dan tombol back ----------------
+function goTab(k) {
+  if (k === state.tab) return;
+  state.tabHistory = (state.tabHistory || []).concat(state.tab).slice(-20);
+  if (k === 'pengaturan') { state.settingsSection = null; state.biometricSetupPending = false; }
+  state.tab = k;
+  var dir = state.swipeDir; state.swipeDir = null;
+  render();
+  if (dir) {
+    var tc = document.getElementById('tab-content');
+    if (tc) { tc.classList.remove('slide-next', 'slide-prev'); void tc.offsetWidth; tc.classList.add('slide-' + dir); }
+  }
+}
+function anyOverlayOpen() {
+  return !!(state.reviewOpen || state.aiOpen || state.mutasiOpen || state.activityLogOpen || state.poBelumOpen ||
+    Object.keys(state.reportOpen).some(function (k) { return state.reportOpen[k]; }));
+}
+// Menutup satu lapis: popup/laporan, lalu panel pengaturan, lalu kembali ke tab sebelumnya.
+function closeTopLayer() {
+  if (anyOverlayOpen()) {
+    state.reviewOpen = false; state.aiOpen = false; state.mutasiOpen = false; state.activityLogOpen = false; state.poBelumOpen = false;
+    Object.keys(state.reportOpen).forEach(function (k) { state.reportOpen[k] = false; });
+    render(); return true;
+  }
+  if (state.tab === 'pengaturan' && state.settingsSection) { state.settingsSection = null; render(); return true; }
+  if (state.tab !== 'dashboard') {
+    var h = state.tabHistory || [];
+    state.tab = h.length ? h.pop() : 'dashboard';
+    state.tabHistory = h; render(); return true;
+  }
+  return false;
+}
+var lastBackAt = 0;
+function armBack() { try { history.pushState({ mdp: 1 }, ''); } catch (e) { /* ignore */ } }
+function showBackToast() {
+  var d = document.createElement('div'); d.className = 'back-toast'; d.textContent = 'Tekan back sekali lagi untuk keluar';
+  document.body.appendChild(d); setTimeout(function () { d.remove(); }, 2200);
+}
+window.addEventListener('popstate', function () {
+  if (!state.authenticated) return;
+  if (closeTopLayer()) { armBack(); return; }
+  var now = Date.now();
+  if (now - lastBackAt < 2500) { lastBackAt = 0; history.back(); return; }
+  lastBackAt = now; armBack(); showBackToast();
+});
+function bindSwipe() {
+  if (window.__swipeBound) return;
+  window.__swipeBound = true;
+  var sx = 0, sy = 0, st = 0, ok = false;
+  document.addEventListener('touchstart', function (e) {
+    var t = e.touches[0]; sx = t.clientX; sy = t.clientY; st = Date.now();
+    ok = window.innerWidth < 1024 && state.authenticated && !anyOverlayOpen() &&
+      !e.target.closest('input,textarea,select,.report-table-wrap,[data-no-swipe],.avatar-menu');
+  }, { passive: true });
+  document.addEventListener('touchend', function (e) {
+    if (!ok) return; ok = false;
+    var t = e.changedTouches[0], dx = t.clientX - sx, dy = t.clientY - sy;
+    if (Math.abs(dx) < 70 || Math.abs(dx) < Math.abs(dy) * 1.6 || Date.now() - st > 700) return;
+    var keys = TABS.map(function (x) { return x.key; }), n = keys.indexOf(state.tab) + (dx < 0 ? 1 : -1);
+    if (n < 0 || n >= keys.length) return;
+    state.swipeDir = dx < 0 ? 'next' : 'prev';
+    goTab(keys[n]);
+  }, { passive: true });
+}
+
 function bindShellEvents() {
   const pill = document.getElementById('account-pill');
   if (pill) pill.addEventListener('click', openSettings);
@@ -2699,10 +2782,7 @@ function bindShellEvents() {
 
   document.querySelectorAll('.tab-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
-      var k = btn.getAttribute('data-tab');
-      if (k === 'pengaturan' && state.tab !== 'pengaturan') { state.settingsSection = null; state.biometricSetupPending = false; }
-      state.tab = k;
-      render();
+      goTab(btn.getAttribute('data-tab'));
     });
   });
 
@@ -2714,6 +2794,7 @@ function bindShellEvents() {
     if (avDel) avDel.addEventListener('click', function () { clearAvatar(); render(); });
     avFile.addEventListener('change', function () { if (avFile.files[0]) readAvatar(avFile.files[0]).then(function () { render(); }); });
   }
+  bindSwipe();
   if (!window.__avClose) { window.__avClose = true; document.addEventListener('click', function () { var m = document.getElementById('avatar-menu'); if (m) m.classList.remove('open'); }); }
 
   bindTabContentEvents();
@@ -4793,7 +4874,7 @@ function renderSettingsSection(key) {
         '<div id="password-msg" class="settings-msg" style="display:none;"></div>' +
         '<div class="form-grid">' +
           '<div class="field"><label class="field-label">Password Lama</label><input id="settings-pw-old" type="password" class="field-input" autocomplete="current-password"></div>' +
-          '<div class="field"><label class="field-label">Password Baru</label><input id="settings-pw-new" type="password" class="field-input" placeholder="Minimal 4 karakter" autocomplete="new-password"></div>' +
+          '<div class="field"><label class="field-label">Password Baru</label><input id="settings-pw-new" type="password" class="field-input" placeholder="Minimal 6 karakter" autocomplete="new-password"></div>' +
           '<div class="field"><label class="field-label">Konfirmasi Password Baru</label><input id="settings-pw-confirm" type="password" class="field-input" autocomplete="new-password"></div>' +
           '<button type="button" id="password-save" class="btn-primary">&#10003; Simpan Password Baru</button>' +
         '</div>' +
