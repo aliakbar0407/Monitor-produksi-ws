@@ -1619,16 +1619,20 @@ async function tryBiometricLogin() {
 // empty treated as empty) -- so the same customer+tanggal+qty combo can be
 // input again as long as the nomor PO is different. When noPo is left
 // undefined (produksi, pallet_keluar), behavior is unchanged.
-async function findDuplicateOnServer(table, tanggal, nama, qty, excludeId, noPo) {
+// nopol is optional too (only for pallet_keluar): the same customer + tanggal + qty
+// shipped on a different truck (different nopol) is a separate shipment, not a duplicate.
+async function findDuplicateOnServer(table, tanggal, nama, qty, excludeId, noPo, nopol) {
   try {
-    const cols = 'id, nama, tanggal, qty, created_by, logged_at' + (noPo !== undefined ? ', no_po' : '');
+    const cols = 'id, nama, tanggal, qty, created_by, logged_at' + (noPo !== undefined ? ', no_po' : '') + (nopol !== undefined ? ', nopol' : '');
     const { data, error } = await sb.from(table).select(cols)
       .eq('tanggal', tanggal).eq('qty', Number(qty) || 0);
     if (error || !data) return null;
     const key = normKey(nama);
     const poKey = noPo !== undefined ? normKey(noPo || '') : null;
+    const nopolKey = nopol !== undefined ? normKey(nopol || '') : null;
     return data.find((r) => normKey(r.nama) === key && r.id !== excludeId &&
-      (noPo === undefined || normKey(r.no_po || '') === poKey)) || null;
+      (noPo === undefined || normKey(r.no_po || '') === poKey) &&
+      (nopol === undefined || normKey(r.nopol || '') === nopolKey)) || null;
   } catch (e) {
     return null;
   }
@@ -1638,8 +1642,8 @@ function duplicateWarningMessage(dup, nama, tanggal, qty) {
   return (
     'Data ini sepertinya sudah pernah diinput' + (dup.created_by ? ' oleh ' + dup.created_by : '') + (dup.logged_at ? ' pada ' + fmtDateTime(dup.logged_at) : '') + '.\n\n' +
     'Customer: ' + nama + '\nTanggal: ' + fmtDate(tanggal) + '\nQty: ' + fmtNum(qty) +
-    (dup.no_po !== undefined ? '\nNomor PO: ' + (dup.no_po || '-') : '') + '\n\n' +
-    'Input ini dibatalkan supaya data tidak double. Jika ini memang transaksi lain, ubah salah satu nilai (misalnya qty, catatan, atau nomor PO) lalu simpan lagi.'
+    (dup.no_po !== undefined ? '\nNomor PO: ' + (dup.no_po || '-') : '') + (dup.nopol !== undefined ? '\nNopol truk: ' + (dup.nopol || '-') : '') + '\n\n' +
+    'Input ini dibatalkan supaya data tidak double. Jika ini memang transaksi lain, ubah salah satu nilai (misalnya qty, catatan, nomor PO, atau nopol truk) lalu simpan lagi.'
   );
 }
 
@@ -1681,7 +1685,7 @@ async function addKeluar(record) {
   const btn = document.getElementById('keluar-submit');
   const original = btn ? btn.innerHTML : '';
   if (btn) { btn.disabled = true; btn.innerHTML = 'Memeriksa data...'; }
-  const dup = await findDuplicateOnServer('pallet_keluar', record.tanggal, record.nama, record.qty);
+  const dup = await findDuplicateOnServer('pallet_keluar', record.tanggal, record.nama, record.qty, undefined, undefined, record.nopol);
   if (dup) {
     if (btn) { btn.disabled = false; btn.innerHTML = original; }
     alert(duplicateWarningMessage(dup, record.nama, record.tanggal, record.qty));
